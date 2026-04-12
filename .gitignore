@@ -1,0 +1,22 @@
+# Kredensial sensitif - JANGAN di-commit
+.env.nexus
+
+# Database lokal
+*.db
+*.db-wal
+*.db-shm
+
+# Folder output AI
+nexus_output/
+nexus_temp/
+__pycache__/
+*.pyc
+*.pyo
+
+# Sisa file Aider
+.aider*
+*.orig
+
+# File sistem
+.DS_Store
+Thumbs.db
