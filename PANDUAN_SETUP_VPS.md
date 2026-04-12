@@ -39,14 +39,31 @@ python3 --version # Harus menampilkan Python 3.x.x
 
 Rojo akan merakit ratusan file `.lua` yang ditulis AI menjadi satu file `.rbxl` yang bisa dibaca Roblox Studio.
 
+**Rojo tidak tersedia di npm.** Instalasinya dilakukan langsung dari binary GitHub Releases (sudah diuji dan berfungsi):
+
 ```bash
-sudo npm install -g @rojo-rbx/rojo
+# Download binary Rojo v7.6.1 untuk Linux x86_64 (VPS pada umumnya)
+wget https://github.com/rojo-rbx/rojo/releases/download/v7.6.1/rojo-7.6.1-linux-x86_64.zip
+
+# Ekstrak binary
+unzip rojo-7.6.1-linux-x86_64.zip
+
+# Beri izin eksekusi dan pindahkan ke PATH global
+chmod +x rojo
+sudo mv rojo /usr/local/bin/
+
+# Hapus file zip
+rm rojo-7.6.1-linux-x86_64.zip
 ```
 
 Verifikasi instalasi:
 ```bash
 rojo --version
+# Harus menampilkan: Rojo 7.6.1
 ```
+
+> Jika VPS Anda menggunakan arsitektur ARM (jarang), ganti URL download dengan:
+> `https://github.com/rojo-rbx/rojo/releases/download/v7.6.1/rojo-7.6.1-linux-aarch64.zip`
 
 ---
 
