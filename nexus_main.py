@@ -8,14 +8,7 @@ import signal
 import sys
 import random
 import time
-from typing import Tuple
-
-try:
-    from aiohttp import web
-    AIOHTTP_AVAILABLE = True
-except ImportError:
-    AIOHTTP_AVAILABLE = False
-
+from aiohttp import web
 from rich.panel import Panel
 
 from nexus_config import (
@@ -43,6 +36,9 @@ from nexus_compiler import NativeLuauCompiler
 from nexus_agents import OmniSynthesizerAgent, AutoHealerAgent, LuauKnowledgeScraper
 
 
+# ==============================
+# TELEGRAM RATE LIMITING SYSTEM
+# ==============================
 _telegram_semaphore = asyncio.Semaphore(1)
 _last_telegram_send = 0.0
 _min_interval_between_messages = 2.0
@@ -50,17 +46,17 @@ _min_interval_between_messages = 2.0
 
 async def send_telegram_notification(message: str, important: bool = False):
     global _last_telegram_send
-
+    
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
     async with _telegram_semaphore:
         now = time.time()
         elapsed = now - _last_telegram_send
-
+        
         if not important and elapsed < _min_interval_between_messages:
             await asyncio.sleep(_min_interval_between_messages - elapsed)
-
+        
         _last_telegram_send = time.time()
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -81,8 +77,9 @@ async def send_telegram_notification(message: str, important: bool = False):
 
 async def send_telegram_document(file_path: str, caption: str = ""):
     global _last_telegram_send
-
+    
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        console_terminal_interface.print("[dim yellow]Kredensial Telegram kosong, pengiriman dokumen dilewati.[/dim yellow]")
         return
 
     if not os.path.exists(file_path):
@@ -94,11 +91,11 @@ async def send_telegram_document(file_path: str, caption: str = ""):
         elapsed = now - _last_telegram_send
         if elapsed < _min_interval_between_messages:
             await asyncio.sleep(_min_interval_between_messages - elapsed)
-
+        
         _last_telegram_send = time.time()
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
-
+        
         def _send():
             try:
                 with open(file_path, 'rb') as f:
@@ -106,12 +103,12 @@ async def send_telegram_document(file_path: str, caption: str = ""):
                     data = {'chat_id': TELEGRAM_CHAT_ID, 'caption': caption}
                     res = requests.post(url, data=data, files=files, timeout=120)
                     if res.status_code == 200:
-                        console_terminal_interface.print("[bold green]✅ File .rbxl sukses dievakuasi ke Telegram![/bold green]")
+                        console_terminal_interface.print("[bold green]✅ File .rbxl sukses dievakuasi ke Telegram Anda![/bold green]")
                     else:
                         console_terminal_interface.print(f"[bold red]❌ Gagal kirim Telegram: {res.text}[/bold red]")
             except Exception as e:
                 console_terminal_interface.print(f"[bold red]Exception Telegram Document: {e}[/bold red]")
-
+        
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, _send)
 
@@ -130,10 +127,6 @@ async def handle_roblox_telemetry(request):
 
 
 async def start_telemetry_webhook():
-    if not AIOHTTP_AVAILABLE:
-        console_terminal_interface.print("[bold yellow][Webhook] aiohttp tidak tersedia. Webhook dinonaktifkan.[/bold yellow]")
-        return
-
     app = web.Application()
     app.router.add_post("/telemetry", handle_roblox_telemetry)
     runner = web.AppRunner(app)
@@ -174,15 +167,15 @@ class RobloxDeployer:
         if not os.path.exists(COMPILED_GAME_FILE):
             console_terminal_interface.print("[bold yellow][Deploy] File .rbxl tidak ditemukan. Publish dilewati.[/bold yellow]")
             return
-
+        
         console_terminal_interface.print(f"[bold cyan][Deploy] Mengirimkan file kompilasi ke Telegram (Evolusi {evolution_level})...[/bold cyan]")
         await send_telegram_document(
-            COMPILED_GAME_FILE,
-            f"🚀 [NEXUS APEX] File Final Evolusi {evolution_level} siap!"
+            COMPILED_GAME_FILE, 
+            f"🚀 [NEXUS APEX] File Final Evolusi {evolution_level} siap! (Akan di-publish ke Roblox Creator API)"
         )
 
         if not ROBLOX_OPEN_CLOUD_API_KEY:
-            console_terminal_interface.print("[bold yellow][Deploy] ROBLOX_OPEN_CLOUD_API_KEY tidak dikonfigurasi.[/bold yellow]")
+            console_terminal_interface.print("[bold yellow][Deploy] ROBLOX_OPEN_CLOUD_API_KEY tidak dikonfigurasi. Berhenti setelah evakuasi Telegram.[/bold yellow]")
             return
 
         url = f"https://apis.roblox.com/universes/v1/{ROBLOX_UNIVERSE_ID}/places/{ROBLOX_PLACE_ID}/versions"
@@ -193,7 +186,7 @@ class RobloxDeployer:
         try:
             console_terminal_interface.print("[bold cyan][Deploy] Mengunggah ke Roblox Open Cloud API...[/bold cyan]")
             loop = asyncio.get_event_loop()
-
+            
             with open(COMPILED_GAME_FILE, "rb") as f:
                 file_data = f.read()
 
@@ -285,12 +278,12 @@ async def dump_ssd():
 
 
 class DynamicTaskArchitect:
-    """Arsitek AI Otonom yang membaca file selesai dan mencari gap untuk men-generate tugas baru."""
-
+    """Arsitek AI Otonom yang membaca file selesai dan mencari gap di DevForum/Github untuk men-generate tugas baru."""
+    
     @staticmethod
     async def analyze_and_plan_next_evolution(evolution_level: int, agent: dict) -> list:
-        console_terminal_interface.print(f"\n[bold magenta]🔍 [Architect] Menganalisis Ekosistem untuk Evolusi {evolution_level}...[/bold magenta]")
-
+        console_terminal_interface.print(f"\n[bold magenta]🔍 [Architect] Menganalisis File Ekosistem & Scraping RAG untuk Evolusi {evolution_level}...[/bold magenta]")
+        
         db = establish_database_connection()
         cur = db.cursor()
         cur.execute("SELECT module_name FROM verified_modules")
@@ -303,8 +296,9 @@ class DynamicTaskArchitect:
 
         sys_inst = (
             "Anda adalah Game Director & Arsitek Roblox Tingkat Militer. "
-            "Analisis daftar modul yang sudah selesai, "
-            "lalu hasilkan JSON daftar tugas baru yang BELUM ADA."
+            "Tugas Anda: Analisis daftar modul yang sudah berhasil dibuat oleh tim programmer, "
+            "baca data referensi (RAG) dari Github/DevForum tentang arsitektur game extraction end-to-end, "
+            "lalu hasilkan JSON daftar tugas baru (fitur/sistem) yang BELUM ADA di ekosistem game ini."
         )
 
         schema = (
@@ -313,7 +307,7 @@ class DynamicTaskArchitect:
             '    {\n'
             '      "cat": "NAMA_KATEGORI_TUGAS_HURUF_BESAR",\n'
             '      "target_folder": "ServerScriptService",\n'
-            '      "desc": "Instruksi spesifik",\n'
+            '      "desc": "Instruksi spesifik dan detail tentang bentuk, warna (wajib neon/cerah), dan logika",\n'
             '      "req": ["DataStoreService"],\n'
             '      "forb": ["_G"]\n'
             '    }\n'
@@ -322,10 +316,10 @@ class DynamicTaskArchitect:
         )
 
         prompt_payload = (
-            f"[DAFTAR MODUL YANG SUDAH SELESAI]:\n"
+            f"[DAFTAR MODUL YANG SUDAH SELESAI DIBUAT (JANGAN MENYURUH MEMBUAT INI LAGI)]:\n"
             f"{', '.join(existing_modules) if existing_modules else 'Belum ada modul.'}\n\n"
-            f"[LIVE RAG KNOWLEDGE BASE]:\n{devforum_data}\n{github_data}\n\n"
-            f"Rancang maksimal 5 sistem krusial yang BELUM ADA. "
+            f"[LIVE RAG KNOWLEDGE BASE (DEVFORUM & GITHUB)]:\n{devforum_data}\n{github_data}\n\n"
+            f"BERDASARKAN DATA DI ATAS, rancang maksimal 5 sistem/tugas krusial yang HILANG atau BELUM ADA untuk melengkapi game extraction ini agar menjadi 100% End-to-End. "
             f"WAJIB KELUARKAN JSON MURNI SESUAI SCHEMA INI:\n{schema}"
         )
 
@@ -336,7 +330,7 @@ class DynamicTaskArchitect:
         env_vars["NO_COLOR"] = "1"
 
         command = [
-            GEMINI_CLI_PATH, "-m", "models/gemini-2.5-flash", "-y",
+            GEMINI_CLI_PATH, "-m", "models/gemma-4-31b-it", "-y",
             "-p", "Baca stdin. Berikan output JSON murni tanpa markdown text."
         ]
 
@@ -356,29 +350,34 @@ class DynamicTaskArchitect:
             )
 
             raw_output = stdout_data.decode("utf-8", errors="ignore")
-
+            
             start_idx = raw_output.find('{')
             end_idx = raw_output.rfind('}')
             if start_idx != -1 and end_idx != -1:
                 clean_json = raw_output[start_idx:end_idx+1]
                 data = json.loads(clean_json)
-
+                
                 new_tasks = []
                 valid_folders = ["ServerScriptService", "StarterPlayerScripts", "StarterCharacterScripts", "StarterGui", "ReplicatedStorage"]
                 for t in data.get("new_tasks", []):
                     cat = t.get("cat", f"SYS_{random.randint(100,999)}")
                     target_folder = t.get("target_folder", "ServerScriptService")
-
+                    
                     if target_folder not in valid_folders:
                         target_folder = "ServerScriptService"
-
+                    
                     req_list = t.get("req", [])
-
+                    
                     if any(keyword in cat.upper() for keyword in ["WEAPON", "ARMOR", "ITEM", "GEAR", "TOOL", "FURNITURE"]) and "Recipe" not in req_list:
                         req_list.append("Recipe")
-
+                        
                     if any(keyword in cat.upper() for keyword in ["ARMOR", "HELMET"]):
                         for r in ["Durability", "ArmorTier", "MaterialType"]:
+                            if r not in req_list:
+                                req_list.append(r)
+                                
+                    if any(keyword in cat.upper() for keyword in ["WEAPON", "ARMOR", "ITEM", "GEAR", "TOOL", "AMMUNITION", "BAIT"]):
+                        for r in ["ItemCategory", "BasePrice", "VisualEquip", "ProximityPrompt"]:
                             if r not in req_list:
                                 req_list.append(r)
 
@@ -390,7 +389,7 @@ class DynamicTaskArchitect:
                         ext = ".lua"
                     else:
                         ext = ".server.lua"
-
+                        
                     new_tasks.append({
                         "name": f"{cat}_1",
                         "path": os.path.join(SOURCE_CODE_DIRECTORY, target_folder, cat, f"{cat}_1{ext}"),
@@ -398,7 +397,7 @@ class DynamicTaskArchitect:
                         "forb": t.get("forb", ["_G", "shared", "loadstring", "getfenv"]),
                         "desc": t.get("desc", f"Implementasi sistem {cat}")
                     })
-                console_terminal_interface.print(f"[bold green]✅ Architect menemukan {len(new_tasks)} tugas baru![/bold green]")
+                console_terminal_interface.print(f"[bold green]✅ Architect menemukan {len(new_tasks)} tugas baru yang harus dikerjakan![/bold green]")
                 return new_tasks
         except Exception as e:
             console_terminal_interface.print(f"[bold red]Architect Agent Error: {e}[/bold red]")
@@ -407,13 +406,48 @@ class DynamicTaskArchitect:
 
 
 def _build_task_queue():
-    """Bangun antrian tugas fundamental statis untuk Evolusi 1."""
     dynamic_tasks = [
-        ("CORE_WORLD_SETTINGS", 1, "StarterPlayerScripts", "WAJIB membuat LocalScript yang mengunci kamera pemain ke First-Person (`Enum.CameraMode.LockFirstPerson`) selamanya tanpa bisa di-zoom out.", ["CameraMode", "LockFirstPerson"], []),
-        ("DAY_NIGHT_CYCLE", 1, "ServerScriptService", "Rancang Sistem Siklus Siang, Sore, dan Malam yang dinamis.", ["Lighting", "ClockTime"], []),
-        ("ITEM_CATEGORY_DATABASE", 1, "ReplicatedStorage", "Rancang Database Kategori Item sentral.", ["Weapon", "Ammunition", "Armor", "Bait", "Material", "Tool"], []),
-        ("RAW_MATERIAL_ITEM", 5, "ServerScriptService", "Rancang RAW MATERIAL / BAHAN MENTAH. HARAM memiliki atribut 'Recipe', 'Durability', atau 'ArmorTier'! Atur 'ItemCategory' = 'Material'.", ["ItemCategory", "BasePrice", "ProximityPrompt"], ["Recipe", "Durability", "ArmorTier", "Weapon"]),
-        ("CORE_INVENTORY_SYSTEM", 1, "ServerScriptService", "Rancang Sistem Inventory Kustom. WAJIB DataStoreService dengan pcall().", ["DataStoreService", "pcall", "MainBackpack", "SafeContainer", "LobbyStorage", "PlayerRemoving", "PlayerAdded"], ["StarterGear"]),
+        ("CORE_WORLD_SETTINGS", 1, "StarterPlayerScripts", "WAJIB membuat LocalScript yang mengunci kamera pemain ke First-Person (`Enum.CameraMode.LockFirstPerson`) selamanya tanpa bisa di-zoom out. Atur juga parameter gravitasi dan Lighting agar terasa seperti survival yang keras.", ["CameraMode", "LockFirstPerson"], []),
+        ("DAY_NIGHT_CYCLE", 1, "ServerScriptService", "Rancang Sistem Siklus Siang, Sore, dan Malam yang dinamis. Waktu di dalam game WAJIB berputar. Lighting harus berubah drastis (gelap gulita di malam hari). Modul ini akan memengaruhi PerceptionRadius monster.", ["Lighting", "ClockTime"], []),
+        ("WEATHER_DISASTER", 5, "ServerScriptService", "Rancang sistem cuaca ekstrem (Hujan Badai, Badai Pasir, Salju). WAJIB memengaruhi jarak pandang pemain dan memengaruhi atribut lingkungan.", [], []),
+        ("CORE_WORLD_GENERATION", 1, "ServerScriptService", "WAJIB membuat script Procedural Generation untuk membangun Baseplate dasar berukuran 2048x64x2048 dan meng-generate tanah/terrain. Gunakan warna PALING CERAH dan NEON. HUKUM PENEMPATAN AKURAT & BENTURAN: Semua tanah dan rintangan yang digenerate WAJIB diletakkan di permukaan menggunakan 'workspace:Raycast()', lalu diatur 'CanCollide = true' dan 'Anchored = true'.", ["Instance.new", "CanCollide", "Anchored", "Raycast", "RaycastParams"], []),
+        ("BIOME_SYSTEM", 5, "ServerScriptService", "Rancang bioma lingkungan ekstrem (Banjir, Pasir, Hutan, Snow, Ocean). Bioma ini akan dibaca oleh sistem Monster sebagai 'Habitat'. HUKUM PENEMPATAN AKURAT & BENTURAN (DEVFORUM STANDARD): Saat meng-generate Pohon atau Batu, DILARANG mengandalkan kolisi bawaan MeshPart. Anda WAJIB menggunakan teknik 'Hitbox Separation'. Anda WAJIB menembakkan sinar 'workspace:Raycast()' ke arah bawah dengan 'RaycastParams' (mode Exclude pohon lain) untuk menemukan titik permukaan tanah sebelum meletakkan Hitbox.", ["Instance.new", "CanCollide", "Anchored", "Raycast", "RaycastParams", "HitboxSeparation"], []),
+        
+        ("RESOURCE_NODE_MANAGER", 1, "ServerScriptService", "Rancang Sistem Manajer Pohon dan Batu. HUKUM NODE: Semua Pohon dan Batu yang di-generate oleh BIOME_SYSTEM WAJIB ditambahkan 'IntValue' bernama 'Health' (misal: 100). Buat fungsi global yang mendengarkan pengurangan Health. Jika Health <= 0, hancurkan objek pohon/batu tersebut dan spawn wujud 3D 'RAW_MATERIAL_ITEM' (Kayu untuk Pohon, Besi Mentah/Batu untuk Rock) di posisi tersebut menggunakan teknik jatuh fisika ringan.", ["IntValue", "Health", "Instance.new"], []),
+
+        ("ITEM_CATEGORY_DATABASE", 1, "ReplicatedStorage", "Rancang Database Kategori Item sentral. WAJIB membuat modul struktur data yang mendaftarkan Kategori resmi: 'Weapon', 'Ammunition', 'Armor', 'Medical', 'Material', 'Valuable', 'Bait', 'Tool'.", ["Weapon", "Ammunition", "Armor", "Bait", "Material", "Tool"], []),
+        
+        ("GATHERING_TOOLS", 2, "ServerScriptService", "Rancang ALAT PANEN: Kapak (Axe) dan Beliung (Pickaxe). HUKUM ALAT PANEN: Ini adalah 'Tool' yang bisa di-equip pemain. WAJIB menggunakan event '.Activated' dan menembakkan 'workspace:Raycast()' jarak dekat ke depan pemain. Kapak HANYA melukai objek ber-tag 'Tree'. Beliung HANYA melukai objek ber-tag 'Rock'. Kurangi nilai 'Health' (IntValue) dari objek tersebut saat dipukul. Set 'ItemCategory' = 'Tool'.", ["Tool", "Activated", "Raycast", "ItemCategory"], []),
+
+        ("RAW_MATERIAL_ITEM", 100, "ServerScriptService", "Rancang RAW MATERIAL / BAHAN MENTAH (Contoh: Daging, Tulang, Besi Mentah, Kayu, Ulat). HUKUM RAW MATERIAL: Karena ini bahan mentah dari alam, item ini HARAM memiliki atribut 'Recipe', 'Durability', atau 'ArmorTier'! Atur 'ItemCategory' = 'Material' (atau 'Bait' untuk Ulat). Item ini hanya boleh dijatuhkan dari Monster atau dihancurkan dari Pohon/Batu. WAJIB buat fisik 3D kecil di tanah yang bisa dipungut pemain dengan ProximityPrompt (ActionText = 'Ambil').", ["ItemCategory", "BasePrice", "ProximityPrompt"], ["Recipe", "Durability", "ArmorTier", "Weapon"]),
+        ("AMMUNITION_CALIBER", 30, "ReplicatedStorage", "Rancang modul Kaliber Peluru meniru 100% statistik Arena Breakout. HUKUM BALISTIK: Amunisi WAJIB mendefinisikan BaseDamage, PenetrationLevel (Tier 1-6). WAJIB punya wujud fisik 3D kotak amunisi dengan ProximityPrompt (ActionText='Ambil').", ["BaseDamage", "PenetrationLevel", "ItemCategory", "BasePrice", "ProximityPrompt", "Anchored"], ["Recipe", "Weapon"]),
+        
+        ("MODERN_ARMOR_HELMET", 25, "ServerScriptService", "Rancang BARANG JADI: Helm Taktis Militer & Rompi Anti-Peluru Modern (Kevlar/Ceramic). HUKUM ARMOR MODERN: WAJIB memiliki 'Recipe' (Bahan mentah dari RAW_MATERIAL_ITEM untuk merakitnya), 'Durability' (100/100), 'ArmorTier' (1-6), dan 'MaterialType' ('Ceramic'/'Steel'). Set 'ItemCategory' = 'Armor'. HUKUM VISUAL EQUIP: Model 3D di tanah WAJIB dipasangkan 'ProximityPrompt' (ActionText='Gunakan'). Saat ditekan, Armor 3D WAJIB di-WeldConstraint ke UpperTorso karakter pemain agar terlihat jelas visualnya!", ["Recipe", "Durability", "ArmorTier", "MaterialType", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], []),
+        ("FANTASY_ARMOR_HELMET", 25, "ServerScriptService", "Rancang BARANG JADI: Jubah Penyihir & Zirah Ksatria Kuno (Fantasy Theme). HUKUM ARMOR FANTASY: Tetap WAJIB memiliki 'Recipe', 'Durability', 'ArmorTier', dan 'MaterialType' ('Leather'/'Mithril'). Set 'ItemCategory' = 'Armor'. HUKUM VISUAL EQUIP: Wujud 3D di tanah dipasangkan 'ProximityPrompt' (ActionText='Gunakan'/'Equip'). WAJIB di-weld ke badan pemain saat dipungut.", ["Recipe", "Durability", "ArmorTier", "MaterialType", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], []),
+        
+        ("MODERN_WEAPON", 20, "ServerScriptService", "Rancang BARANG JADI: Senjata Api Modern (Assault Rifle, Sniper) meniru Arena Breakout. HUKUM MODERN WEAPON: HARAM memiliki variabel Damage! Senjata ini menembakkan peluru fisik (Raycast). WAJIB mengatur 'CompatibleCaliber' (contoh: 5.56x45mm), 'FireRate' (RPM), dan 'Recoil'. WAJIB punya 'Recipe' dan 'ItemCategory' = 'Weapon'. HUKUM VISUAL EQUIP: Pasang ProximityPrompt (Equip). WAJIB di-WeldConstraint ke tangan pemain saat dipakai.", ["Raycast", "Recipe", "CompatibleCaliber", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], ["BaseDamage"]),
+        ("FANTASY_WEAPON", 20, "ServerScriptService", "Rancang BARANG JADI: Senjata Sihir/Pedang Ksatria (Fantasy Theme). HUKUM FANTASY WEAPON: Menggunakan serangan Melee atau Tembakan Mana. WAJIB punya 'Recipe' dan 'ItemCategory' = 'Weapon'. HUKUM VISUAL EQUIP: Pasang ProximityPrompt (Equip). WAJIB di-WeldConstraint ke tangan karakter pemain.", ["Recipe", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], ["CompatibleCaliber"]),
+        
+        ("CORE_INVENTORY_SYSTEM", 1, "ServerScriptService", "Rancang Sistem Inventory Kustom khusus Extraction Game. DILARANG KERAS menggunakan Backpack bawaan Roblox. WAJIB membagi inventory menjadi 3 kompartemen struktur data di Server: 'MainBackpack' (Tas tempur, hilang 100% saat mati), 'SafeContainer' (Tas kecil aman saat mati), dan 'LobbyStorage' (Gudang Stash permanen di Lobby yang menampung barang beli/jual, TIDAK BISA dibawa ke arena tempur). HUKUM PERSISTENSI DATA MUTLAK: Barang di SafeContainer dan LobbyStorage TIDAK BOLEH HILANG saat pemain keluar game. WAJIB menggunakan event `Players.PlayerAdded` untuk me-load data dan `Players.PlayerRemoving` untuk me-save data ke DataStoreService dengan pcall().", ["DataStoreService", "pcall", "MainBackpack", "SafeContainer", "LobbyStorage", "PlayerRemoving", "PlayerAdded"], ["StarterGear"]),
+        ("CORE_INBOX_SYSTEM", 1, "ServerScriptService", "Rancang Sistem Kotak Masuk (Inbox/Mailbox) mirip Arena Breakout. Bertindak sebagai penampung sementara dan aman untuk pemain. Data Inbox WAJIB disimpan di DataStoreService.", ["DataStoreService", "pcall", "Inbox"], []),
+        ("CORE_INBOX_UI", 1, "StarterGui", "Rancang UI untuk Kotak Masuk (Inbox) dengan ikon Amplop.", ["RemoteFunction"], []),
+        
+        ("MONSTER", 50, "ServerScriptService", "Rancang monster/hewan unik. HUKUM EKOLOGI DUNIA NYATA: WAJIB mendefinisikan 'Diet', 'SocialBehavior', 'SpawnWeight', 'Habitat', 'LocomotionType' (Terrestrial, Aerial, Aquatic), dan 'DropTable' (Jika mati, harus men-spawn wujud fisik dari RAW_MATERIAL_ITEM yang terdaftar agar pemain bisa memungutnya). HUKUM RANTAI MAKANAN: Omnivora/Karnivora WAJIB memindai radius sekitarnya untuk mencari item fisik berlabel 'Bait' untuk dimakan. HUKUM MOTORIK: Gunakan PathfindingService.", ["PathfindingService", "Humanoid", "Diet", "SocialBehavior", "SpawnWeight", "Habitat", "DropTable", "Stamina", "PerceptionRadius", "LocomotionType"], ["Motor6D", "Scavenger"]),
+        
+        ("LOBBY_SPACESHIP", 1, "ServerScriptService", "Rancang lobby di pesawat luar angkasa besar dengan domain investor. HUKUM FISIKA LOBBY: Lobby ini BUKAN Bioma! Bangun pesawat menggunakan blok Part biasa di langit/luar angkasa (Y = 10000). DILARANG KERAS menggunakan workspace:Raycast() ke tanah karena ini di angkasa. Namun lantai/dinding pesawat WAJIB CanCollide = true dan Anchored = true.", ["Anchored", "CanCollide"], ["Raycast", "Terrain"]),
+        ("FURNITURE", 50, "ServerScriptService", "Rancang furnitur lobby pesawat. Warna wajib putih cerah atau neon. HUKUM FISIKA: Furnitur diletakkan di dalam Lobby Pesawat (Y=10000), DILARANG Raycast ke tanah bumi. Furnitur WAJIB menggunakan 'HitboxSeparation', 'CanCollide = true' (di hitbox), dan 'Anchored = true'.", ["Anchored", "CanCollide", "HitboxSeparation"], ["Raycast"]),
+        
+        ("SMELTING_FURNACE", 1, "ServerScriptService", "Rancang Mesin Peleburan Logam (Furnace) di Lobby. HUKUM SMELTING: Mesin ini memiliki wujud fisik 3D dan 'ProximityPrompt' (ActionText='Lebur Besi'). Jika pemain membawa 'Besi Mentah' (Raw Iron) di inventory, mesin akan menghapusnya dari inventory, memutar animasi/partikel api selama beberapa detik menggunakan 'task.wait()', lalu men-spawn 'Iron Ingot' (Besi Matang) di depan mesin agar bisa dipungut pemain.", ["ProximityPrompt", "task.wait", "ParticleEmitter"], []),
+
+        ("NPC_TRADER", 8, "ServerScriptService", "Rancang Skrip Server 8 NPC Trader terspesialisasi: 1. Blacksmith (Dekat Furnace, jual Besi/Armor), 2. Woodworker (Jual Kayu/Kapak), 3. Stonemason (Jual Batu/Beliung), 4. Gunsmith (Jual Senjata Api/Peluru), 5. Medic (Medical), 6. Chef (Daging/Makanan), 7. Scientist (Material langka), 8. Black Market (Valuable). HUKUM NPC HIDUP: NPC DILARANG menjadi patung statis! Mereka WAJIB dipasangkan alat kerja (Palu, Gergaji, dll) di tangan mereka menggunakan `WeldConstraint`. HARGA JUAL NPC = BasePrice * 2.0. HARGA BELI DARI PEMAIN = BasePrice * 0.4.", ["Recipe", "ProximityPrompt", "BasePrice", "ItemCategory", "RemoteEvent", "WeldConstraint"], ["TakeDamage"]),
+        
+        ("NPC_SHOP_UI", 1, "StarterGui", "Rancang UI Katalog Belanja untuk NPC Trader.", ["RemoteEvent", "RemoteFunction"], []),
+        ("FLEA_MARKET_BACKEND", 1, "ServerScriptService", "Rancang Backend Server Keamanan untuk Pasar Loak (Shopee pemain) menggunakan pcall.", ["RemoteFunction", "DataStoreService", "pcall", "Inbox"], []),
+        ("PLAYER_FLEA_MARKET_UI", 1, "StarterGui", "Rancang UI Pasar Loak (Flea Market / Shopee antar pemain).", ["ItemCategory", "TextBox", "RemoteFunction"], []),
+        ("CORE_MISSION_SYSTEM", 1, "ServerScriptService", "Rancang Sistem Misi Harian dan Event Mingguan (Quest System).", ["Inbox", "Mission"], []),
+        ("CORE_MISSION_UI", 1, "StarterGui", "Rancang UI Daftar Misi mendengarkan RemoteEvent.", ["RemoteEvent"], []),
+        ("CORE_MONETIZATION_SYSTEM", 1, "ServerScriptService", "Rancang sistem monetisasi sentral. HUKUM ANTI-P2W MUTLAK: `MarketplaceService.ProcessReceipt` HANYA BOLEH dideklarasikan di SATU skrip ini.", ["MarketplaceService", "ProcessReceipt", "DataStoreService", "pcall"], ["Sword", "Gun", "Armor", "Weapon"]),
+        ("AUTONOMOUS_GAP_ANALYSIS", 1, "ServerScriptService", "Analisis ekosistem game saat ini. Secara otonom bangun sistem fundamental tambahan.", [], []),
         ("DAILY_LOG_SYSTEM", 1, "ServerScriptService", "Rancang sistem log harian.", [], []),
         ("AUDIO_SYSTEM", 1, "StarterPlayerScripts", "Rancang sistem audio client untuk BGM dan SFX.", [], []),
     ]
@@ -429,7 +463,7 @@ def _build_task_queue():
                 ext = ".lua"
             else:
                 ext = ".server.lua"
-
+                
             task_queue.append({
                 "name": f"{cat}_{i}",
                 "path": os.path.join(SOURCE_CODE_DIRECTORY, target_folder, cat, f"{cat}_{i}{ext}"),
@@ -467,7 +501,7 @@ async def run_orchestrator():
                 current_agent_architect = ACTIVE_AGENTS[agent_idx % len(ACTIVE_AGENTS)]
                 agent_idx += 1
                 task_queue = await DynamicTaskArchitect.analyze_and_plan_next_evolution(evolution_level, current_agent_architect)
-
+                
                 if not task_queue:
                     console_terminal_interface.print("[bold yellow]Architect menyimpulkan game sudah lengkap atau terjadi limit. Memuat ulang ekspansi kosmetik...[/bold yellow]")
                     task_queue = [
@@ -476,7 +510,7 @@ async def run_orchestrator():
                             "path": os.path.join(SOURCE_CODE_DIRECTORY, "StarterPlayerScripts", f"EXPANSION_{evolution_level}.client.lua"),
                             "req": [],
                             "forb": ["_G", "shared"],
-                            "desc": "Berdasarkan ekosistem yang ada, ciptakan sistem kosmetik atau optimasi baru."
+                            "desc": "Berdasarkan ekosistem yang ada, ciptakan sistem kosmetik atau optimasi baru yang membuat game ini mencapai level AAA."
                         }
                     ]
 
@@ -484,7 +518,7 @@ async def run_orchestrator():
 
             console_terminal_interface.print(
                 Panel(
-                    f"[bold magenta]=== SEQUENTIAL QUEUE HANDOFF "
+                    f"[bold magenta]=== TAHAP 1: SEQUENTIAL QUEUE HANDOFF "
                     f"({total_tasks} tasks, {len(ACTIVE_AGENTS)} agents aktif) ===[/bold magenta]"
                 )
             )
@@ -497,12 +531,14 @@ async def run_orchestrator():
                 console_terminal_interface.print(
                     f"\n[bold blue]--- Task {task_num}/{total_tasks}: {task['name']} ---[/bold blue]"
                 )
-
+                
                 task_start_time = time.time()
+                task_timeout = float('inf') 
                 completed = False
                 prev_err = ""
                 prev_code = ""
                 real_attempt_count = 0
+                max_retry_attempts = float('inf')
                 error_history = []
 
                 while not completed:
@@ -537,127 +573,63 @@ async def run_orchestrator():
                             f"[bold yellow]  Rate limit terdeteksi, menunggu 60 detik...[/bold yellow]"
                         )
                         await asyncio.sleep(60)
-                    elif "GEMINI_CLI_NOT_FOUND" in prev_err:
-                        console_terminal_interface.print(
-                            f"[bold red]  Gemini CLI tidak ditemukan! Menunggu 30 detik dan lanjutkan...[/bold red]"
-                        )
-                        await asyncio.sleep(30)
-                        tasks_failed += 1
-                        failed_tasks.append(task["name"])
-                        break
                     else:
                         real_attempt_count += 1
-
+                        
                         error_key = prev_err.split(":")[0][:50]
                         error_history.append(error_key)
-
+                        
                         backoff_delay = min(2 ** real_attempt_count, 30)
                         if real_attempt_count > 0:
                             await asyncio.sleep(backoff_delay)
 
-                        if real_attempt_count >= 10:
-                            console_terminal_interface.print(
-                                f"[bold red]  Task {task['name']} gagal setelah 10 percobaan. Lanjutkan ke task berikutnya.[/bold red]"
-                            )
-                            tasks_failed += 1
-                            failed_tasks.append(task["name"])
-                            break
+                if not completed:
+                    tasks_failed += 1
+                    error_summary = f"• {task['name']}: {prev_err[:100]}"
+                    failed_tasks.append(error_summary)
+                    continue
 
             console_terminal_interface.print(
-                Panel(
-                    f"[bold green]✅ EVOLUSI {evolution_level} SELESAI!\n"
-                    f"Berhasil: {tasks_done}/{total_tasks} | Gagal: {tasks_failed}/{total_tasks}\n"
-                    f"Tasks Gagal: {', '.join(failed_tasks) if failed_tasks else 'Tidak ada'}[/bold green]"
-                )
+                f"\n[bold magenta]Siklus {generation_counter} Selesai. "
+                f"Berhasil: {tasks_done}/{total_tasks}, Gagal: {tasks_failed}/{total_tasks}. "
+                f"Sinkronisasi File...[/bold magenta]"
             )
-
             await dump_ssd()
 
-            rojo_success = RobloxDeployer.compile_rojo()
-            if rojo_success:
-                await RobloxDeployer.publish(evolution_level)
-                await send_telegram_notification(
-                    f"✅ Evolusi {evolution_level} Selesai!\n"
-                    f"Berhasil: {tasks_done}/{total_tasks} tugas.\n"
-                    f"File .rbxl telah dikirim!",
-                    important=True
-                )
+            if evolution_level >= 50:
+                console_terminal_interface.print("[bold green]🎉 Evolusi 50 Selesai! Memulai Deployment Akhir (Telegram -> Roblox)...[/bold green]")
+                if RobloxDeployer.compile_rojo():
+                    await RobloxDeployer.publish(evolution_level)
+                break
 
             evolution_level += 1
             generation_counter += 1
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
 
-    except KeyboardInterrupt:
-        console_terminal_interface.print("\n[bold red]Sistem dihentikan oleh pengguna.[/bold red]")
     except Exception as e:
-        console_terminal_interface.print(f"[bold red]FATAL ERROR di Orchestrator: {e}[/bold red]")
-        import traceback
-        traceback.print_exc()
+        error_msg = f"FATAL ERROR di Orchestrator: {type(e).__name__}: {e}"
+        console_terminal_interface.print(f"[bold red]{error_msg}[/bold red]")
+        try:
+            await send_telegram_notification(f"❌ {error_msg}")
+        except Exception:
+            pass
         raise
 
 
-async def test_roblox_api():
-    """Uji coba Roblox Open Cloud API."""
-    console_terminal_interface.print("\n[bold cyan]=== UJI COBA ROBLOX OPEN CLOUD API ===[/bold cyan]")
-
-    if not ROBLOX_OPEN_CLOUD_API_KEY:
-        console_terminal_interface.print("[bold red]❌ ROBLOX_OPEN_CLOUD_API_KEY tidak ditemukan![/bold red]")
-        return False
-
-    console_terminal_interface.print(f"[dim]Universe ID: {ROBLOX_UNIVERSE_ID}[/dim]")
-    console_terminal_interface.print(f"[dim]Place ID: {ROBLOX_PLACE_ID}[/dim]")
-
-    url = f"https://apis.roblox.com/cloud/v2/universes/{ROBLOX_UNIVERSE_ID}"
-    headers = {
-        "x-api-key": ROBLOX_OPEN_CLOUD_API_KEY,
-    }
-
-    try:
-        loop = asyncio.get_event_loop()
-
-        def _test_get():
-            return requests.get(url, headers=headers, timeout=15)
-
-        response = await loop.run_in_executor(None, _test_get)
-        console_terminal_interface.print(f"[dim]Response Status: {response.status_code}[/dim]")
-
-        if response.status_code == 200:
-            data = response.json()
-            console_terminal_interface.print(f"[bold green]✅ Roblox Open Cloud API BERHASIL![/bold green]")
-            console_terminal_interface.print(f"[green]   Universe Name: {data.get('displayName', 'N/A')}[/green]")
-            console_terminal_interface.print(f"[green]   Privacy: {data.get('visibility', 'N/A')}[/green]")
-            return True
-        elif response.status_code == 401:
-            console_terminal_interface.print(f"[bold red]❌ API Key tidak valid atau tidak memiliki izin! Status: 401[/bold red]")
-            console_terminal_interface.print(f"[dim]Response: {response.text[:300]}[/dim]")
-            return False
-        elif response.status_code == 403:
-            console_terminal_interface.print(f"[bold red]❌ Akses ditolak! Universe tidak ditemukan atau API Key tidak punya izin ke universe ini. Status: 403[/bold red]")
-            console_terminal_interface.print(f"[dim]Response: {response.text[:300]}[/dim]")
-            return False
-        elif response.status_code == 404:
-            console_terminal_interface.print(f"[bold yellow]⚠️ Universe ID {ROBLOX_UNIVERSE_ID} tidak ditemukan. Status: 404[/bold yellow]")
-            return False
-        else:
-            console_terminal_interface.print(f"[bold yellow]⚠️ Roblox API Status: {response.status_code}[/bold yellow]")
-            console_terminal_interface.print(f"[dim]Response: {response.text[:300]}[/dim]")
-            return False
-    except Exception as e:
-        console_terminal_interface.print(f"[bold red]❌ Exception saat test Roblox API: {e}[/bold red]")
-        return False
+def _shutdown_handler(signum, frame):
+    console_terminal_interface.print("[bold red]\nSistem dihentikan oleh pengguna (SIGINT/SIGTERM).[/bold red]")
+    sys.exit(0)
 
 
 if __name__ == "__main__":
-    async def main():
-        console_terminal_interface.print(Panel("[bold green]🚀 NEXUS AI SYSTEM STARTING...[/bold green]"))
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
 
-        api_ok = await test_roblox_api()
-        if api_ok:
-            console_terminal_interface.print("[bold green]✅ Roblox API Test: PASSED[/bold green]")
-        else:
-            console_terminal_interface.print("[bold yellow]⚠️ Roblox API Test: GAGAL (Sistem tetap berjalan)[/bold yellow]")
-
-        await run_orchestrator()
-
-    asyncio.run(main())
+    console_terminal_interface.print(
+        Panel("[bold cyan]NEXUS TIER ABSOLUTE APEX - SELF-HEALING AUTONOMOUS AGENT INITIALIZING...[/bold cyan]")
+    )
+    try:
+        asyncio.run(run_orchestrator())
+    except SystemExit:
+        pass
