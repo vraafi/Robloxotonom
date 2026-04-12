@@ -5,12 +5,15 @@ import os
 import uuid
 import shutil
 import signal
+import tempfile
 import subprocess
 import requests
 import difflib
 from typing import Tuple
 
 from nexus_healer import ApexKeyRotator
+
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from nexus_config import (
     console_terminal_interface,
@@ -29,9 +32,8 @@ CLI_EXECUTION_SEMAPHORE = asyncio.Semaphore(1)
 
 MARKDOWN_BLOCK = chr(96) * 3
 
-
 def extract_pure_luau_code(raw_payload: str) -> str:
-    """Penghancur Markdown tangguh."""
+    """Penghancur Markdown tangguh. Membersihkan sisa simbol dan spasi liar."""
     if not raw_payload:
         return ""
     code = raw_payload.strip()
@@ -39,22 +41,23 @@ def extract_pure_luau_code(raw_payload: str) -> str:
     code = re.sub(r'\n*\s*`{3}\s*$', '', code)
     return code.strip()
 
-
 class RobloxMCPBridge:
-    """Jembatan HTTP ke PC Lokal (Roblox Studio MCP)."""
-
+    """
+    Jembatan HTTP ke PC Lokal Anda (Roblox Studio MCP).
+    Membypass bug enum API dengan menembak langsung JSON-RPC ke server.
+    """
     @staticmethod
     async def execute_tool(tool_name: str, arguments: dict) -> str:
         if not ROBLOX_MCP_URL:
-            return "ERROR: ROBLOX_MCP_URL tidak dikonfigurasi."
-
+            return "ERROR: ROBLOX_MCP_URL tidak dikonfigurasi di VPS Anda."
+        
         payload = {
             "jsonrpc": "2.0",
             "method": tool_name,
             "params": arguments,
             "id": 1
         }
-
+        
         def _post():
             try:
                 res = requests.post(f"{ROBLOX_MCP_URL}/jsonrpc", json=payload, timeout=45)
@@ -62,15 +65,15 @@ class RobloxMCPBridge:
                     return res.text
                 return f"MCP_ERROR: Kode {res.status_code} | Pesan: {res.text}"
             except Exception as e:
-                return f"MCP_CONNECTION_FAILED: {str(e)}"
+                return f"MCP_CONNECTION_FAILED: Pastikan ngrok aktif di PC Lokal Anda. Detail: {str(e)}"
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _post)
 
 
 class LuauKnowledgeScraper:
-    """Sistem RAG Tingkat Militer Ekstrim."""
-
+    """Sistem RAG (Retrieval-Augmented Generation) Tingkat Militer Ekstrim."""
+    
     @staticmethod
     def _clean_error_query(raw_error: str) -> str:
         clean_text = re.sub(r'temp_[a-zA-Z0-9_]+\.luau:\d+:\s*', '', raw_error)
@@ -89,17 +92,17 @@ class LuauKnowledgeScraper:
         try:
             encoded_query = query.replace(" ", "+")
             url = f"https://api.github.com/search/code?q={encoded_query}+roblox+pushed:>2024-01-01&per_page=2"
-
+            
             command = [
                 "curl", "-s", "--max-time", "15",
                 "-H", "Accept: application/vnd.github.v3+json",
                 "-H", "User-Agent: NexusAgent/1.0"
             ]
-
+            
             github_token = os.getenv("GITHUB_TOKEN", "")
             if github_token:
                 command.extend(["-H", f"Authorization: Bearer {github_token}"])
-
+                
             command.append(url)
 
             loop = asyncio.get_event_loop()
@@ -108,11 +111,26 @@ class LuauKnowledgeScraper:
                 data = json.loads(proses.stdout)
                 items = data.get("items", [])[:2]
                 if items:
-                    res = "GITHUB ROBLOX KNOWLEDGE:\n"
+                    res = "GITHUB ROBLOX KNOWLEDGE (RAW FILE EXTRACT):\n"
                     for item in items:
                         repo_name = item.get('repository', {}).get('full_name', '')
                         file_name = item.get('name', '')
-                        res += f"--- FILE: {repo_name}/{file_name} ---\n"
+                        file_api_url = item.get('url', '')
+                        
+                        if file_api_url:
+                            raw_cmd = [
+                                "curl", "-s", "--max-time", "10",
+                                "-H", "Accept: application/vnd.github.v3.raw",
+                                "-H", "User-Agent: NexusAgent/1.0"
+                            ]
+                            if github_token:
+                                raw_cmd.extend(["-H", f"Authorization: Bearer {github_token}"])
+                            raw_cmd.append(file_api_url)
+                            
+                            raw_proses = await loop.run_in_executor(None, lambda: subprocess.run(raw_cmd, capture_output=True, text=True, timeout=15))
+                            if raw_proses.returncode == 0 and raw_proses.stdout:
+                                raw_code = raw_proses.stdout[:4000]
+                                res += f"--- FULL/RAW FILE: {repo_name}/{file_name} ---\n{raw_code}\n\n"
                     return res
         except Exception:
             pass
@@ -123,7 +141,7 @@ class LuauKnowledgeScraper:
         try:
             encoded_query = query.replace(" ", "+")
             url = f"https://devforum.roblox.com/search/query.json?q={encoded_query}"
-
+            
             command = [
                 "curl", "-s", "--max-time", "15",
                 "-H", "User-Agent: NexusAgent/1.0",
@@ -135,9 +153,24 @@ class LuauKnowledgeScraper:
                 data = json.loads(proses.stdout)
                 posts = data.get("posts", [])[:2]
                 if posts:
-                    res = "ROBLOX DEVFORUM SOLUTIONS:\n"
+                    res = "ROBLOX DEVFORUM SOLUTIONS (FULL CODE BLOCKS):\n"
                     for p in posts:
-                        res += f"--- POST ID: {p.get('id', 'N/A')} ---\n"
+                        post_id = p.get("id")
+                        if post_id:
+                            raw_post_url = f"https://devforum.roblox.com/posts/{post_id}.json"
+                            raw_cmd = [
+                                "curl", "-s", "--max-time", "10",
+                                "-H", "User-Agent: NexusAgent/1.0",
+                                raw_post_url
+                            ]
+                            raw_proses = await loop.run_in_executor(None, lambda: subprocess.run(raw_cmd, capture_output=True, text=True, timeout=15))
+                            if raw_proses.returncode == 0 and raw_proses.stdout:
+                                try:
+                                    post_data = json.loads(raw_proses.stdout)
+                                    raw_text = post_data.get("raw", "")[:2000] 
+                                    res += f"--- DEVFORUM RAW POST ---\n{raw_text}\n\n"
+                                except Exception:
+                                    pass
                     return res
         except Exception:
             pass
@@ -163,7 +196,8 @@ class LuauKnowledgeScraper:
                     for p in posts:
                         post_data = p.get("data", {})
                         title = post_data.get('title', '')
-                        res += f"--- DISCUSSION: {title} ---\n"
+                        body_text = post_data.get('selftext', '')[:600]
+                        res += f"--- DISCUSSION: {title} ---\n{body_text}...\n\n"
                     return res
         except Exception:
             pass
@@ -173,6 +207,8 @@ class LuauKnowledgeScraper:
 async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_payload: str) -> Tuple[bool, str]:
     """
     EKSEKUTOR MUTLAK SEQUENTIAL (File-to-File IPC): 100% Native CLI Execution.
+    Menggunakan Gemma 4 31B IT sebagai mesin utama dengan parameter bypass performa.
+    Batas waktu eksekusi: 30 Menit (1800 detik).
     """
     async with CLI_EXECUTION_SEMAPHORE:
         api_key = _key_rotator.get_key()
@@ -197,9 +233,11 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
             env_vars["HOME"] = temp_home_dir
 
             schema_enforcement = (
-                "WAJIB OUTPUT JSON MURNI DENGAN SALAH SATU DARI 2 FORMAT BERIKUT INI:\n\n"
-                "PILIHAN 1: JIKA INGIN MEMANGGIL MCP TOOL:\n"
-                '{"mcp_tool_call": {"tool_name": "start_playtest", "args": {}}}\n\n'
+                "WAJIB OUTPUT JSON MURNI DENGAN SALAH SATU DARI 2 FORMAT BERIKUT INI (PILIH SALAH SATU):\n\n"
+                "PILIHAN 1: JIKA INGIN MEMANGGIL MCP TOOL UNTUK DEBUGGING STUDIO:\n"
+                '{"mcp_tool_call": {"tool_name": "start_playtest", "args": {}}}\n'
+                '{"mcp_tool_call": {"tool_name": "read_logs", "args": {}}}\n'
+                '{"mcp_tool_call": {"tool_name": "edit_script", "args": {"script_path": "...", "new_code": "..."}}}\n\n'
                 "PILIHAN 2: JIKA SUDAH SELESAI DAN INGIN MEMBERIKAN KODE LUAU FINAL:\n"
                 '{"luau_code_payload": "string kode luau murni"}'
             )
@@ -214,9 +252,10 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                 f.write(full_payload)
 
             model_candidates = [
-                "models/gemini-2.5-flash",
+                "models/gemma-4-31b-it",                  
+                "models/gemma-4-26b-a4b-it",              
+                "models/gemini-3.1-flash-lite-preview",   
                 "models/gemini-2.0-flash",
-                "models/gemini-1.5-flash",
             ]
 
             last_error = ""
@@ -247,7 +286,7 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                     try:
                         stdout_data, stderr_data = await asyncio.wait_for(
                             process.communicate(input=prompt_content.encode("utf-8")),
-                            timeout=1800.0,
+                            timeout=1800.0, 
                         )
                     except asyncio.TimeoutError:
                         try:
@@ -300,7 +339,7 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                     continue
 
                 except FileNotFoundError:
-                    return False, f"GEMINI_CLI_NOT_FOUND: CLI tidak ditemukan di {GEMINI_CLI_PATH}"
+                    return False, f"GEMINI_CLI_NOT_FOUND: CLI tidak ditemukan."
                 except Exception as e:
                     last_error = f"SYSTEM_EXCEPTION ({model_name}): {str(e)}"
                     continue
@@ -315,33 +354,34 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
 class AutoHealerAgent:
     def __init__(self):
         self.sys_inst = (
-            "BERPIKIRLAH SECARA MENDALAM DAN EKSTENSIF SEBELUM MENJAWAB! "
+            "<|think|>\n"
+            "BERPIKIRLAH SECARA MENDALAM DAN EKSTENSIF (REASON LONGER) SEBELUM MENJAWAB! Evaluasi setiap kemungkinan kesalahan kode sebelum Anda memperbaikinya. "
             "Anda adalah Ahli Bedah Kode Level Master dengan standar militer. "
             "TUGAS MUTLAK: Perbaiki kode Luau yang rusak berdasarkan error dari compiler. "
-            "Terapkan pengujian tingkat militer sehingga kode perbaikan Anda 99% tidak mungkin eror."
+            "WAJIB: Searching github untuk mengetahui kode lua nya eror atau tidak. "
+            "Terapkan pengujian tingkat militer sehingga kode perbaikan Anda 99% tidak mungkin eror.\n"
+            "KEISTIMEWAAN MCP: Jika Anda kebingungan atas logika error, Anda memiliki akses MCP. Anda BISA memanggil Tool JSON untuk 'start_playtest', membaca log, dan berinteraksi dengan Studio."
         )
-        self.heal_history = {}
+        self.heal_history = {} 
 
     def _analyze_error_type(self, error_msg: str) -> str:
         error_lower = error_msg.lower()
-        if "but got" in error_lower or "expected" in error_lower:
-            return "TYPE_MISMATCH"
-        elif "unknown" in error_lower and ("global" in error_lower or "type" in error_lower):
-            return "UNDEFINED_REFERENCE"
-        elif "syntax" in error_lower or "unexpected symbol" in error_lower:
-            return "SYNTAX_ERROR"
-        elif "cannot assign" in error_lower or "function only returns" in error_lower:
-            return "ASSIGNMENT_ERROR"
-        elif "unknown property" in error_lower or "not found" in error_lower:
-            return "PROPERTY_ERROR"
-        else:
-            return "GENERIC_ERROR"
+        if "but got" in error_lower or "expected" in error_lower: return "TYPE_MISMATCH"
+        elif "unknown" in error_lower and ("global" in error_lower or "type" in error_lower): return "UNDEFINED_REFERENCE"
+        elif "syntax" in error_lower or "unexpected symbol" in error_lower: return "SYNTAX_ERROR"
+        elif "cannot assign" in error_lower or "function only returns" in error_lower: return "ASSIGNMENT_ERROR"
+        elif "unknown property" in error_lower or "not found" in error_lower: return "PROPERTY_ERROR"
+        else: return "GENERIC_ERROR"
 
     def _generate_fix_guidance(self, error_msg: str, error_type: str) -> str:
-        base_searching = "WAJIB SEARCHING SEBELUM FIX:\n- Cari solusi serupa di referensi Roblox DevForum\n\n"
+        base_searching = (
+            "WAJIB SEARCHING SEBELUM FIX:\n"
+            "- Wajib Searching github untuk mengetahui kode lua nya eror atau tidak\n"
+            "- Reddit: r/robloxdev, r/lua untuk solutions serupa\n\n"
+        )
         guidance = {
-            "TYPE_MISMATCH": base_searching + "- Tambahkan type casting: `x as Y` atau `tostring()`.",
-            "UNDEFINED_REFERENCE": base_searching + "- Cek: apakah sudah di-require? apakah ada typo?",
+            "TYPE_MISMATCH": base_searching + "- Tambahkan type casting: `x as Y` atau `tostring()`.\n- Pastikan semua operands punya type yang compatible.",
+            "UNDEFINED_REFERENCE": base_searching + "- Cek: apakah sudah di-require? apakah ada typo?\n- Untuk Roblox API: gunakan yang ada di ecosystem context.",
             "SYNTAX_ERROR": base_searching + "- Luau strict mode: semua variable harus declared dengan local/const.",
             "ASSIGNMENT_ERROR": base_searching + "- Fix: gunakan temp variable, atau ubah type target.",
             "PROPERTY_ERROR": base_searching + "- Untuk Roblox Instance: gunakan GetChildren(), FindFirstChild() dengan benar.",
@@ -350,10 +390,10 @@ class AutoHealerAgent:
         return guidance.get(error_type, guidance["GENERIC_ERROR"])
 
     async def heal_code(
-        self,
-        broken_code: str,
-        compiler_error: str,
-        module_name: str,
+        self, 
+        broken_code: str, 
+        compiler_error: str, 
+        module_name: str, 
         agent: dict,
         task_description: str = "",
         ecosystem_context: str = "",
@@ -362,62 +402,65 @@ class AutoHealerAgent:
     ) -> str:
         last_error_line = compiler_error.splitlines()[-1] if compiler_error else "Unknown"
         error_type = self._analyze_error_type(compiler_error)
-
+        
         if module_name not in self.heal_history:
             self.heal_history[module_name] = []
         self.heal_history[module_name].append(error_type)
-
+        
         console_terminal_interface.print(f"[bold magenta]   [Auto-Healer] Membedah {module_name} ({error_type}): {last_error_line}[/bold magenta]")
-
+        
         safe_broken_code = extract_pure_luau_code(broken_code)
         fix_guidance = self._generate_fix_guidance(compiler_error, error_type)
-
+        
         base_prompt = (
             f"[ERROR CLASSIFICATION]: {error_type}\n"
             f"[ERROR MESSAGE COMPILER LUNE/ROJO]:\n{compiler_error}\n\n"
             f"[RECOMMENDED FIX STRATEGY]:\n{fix_guidance}\n\n"
         )
         if ecosystem_context:
-            base_prompt += f"[MODUL ECOSYSTEM REFERENCE]:\n{ecosystem_context}\n\n"
-
+            base_prompt += f"[MODUL ECOSYSTEM REFERENCE UNTUK IMPORT/REQUIRE]:\n{ecosystem_context}\n\n"
+        
+        console_terminal_interface.print(f"[dim cyan]   🔍 Menjalankan RAG Pipeline...[/dim cyan]")
         clean_error_q = LuauKnowledgeScraper._clean_error_query(compiler_error)
         clean_task_name = LuauKnowledgeScraper._clean_task_query(module_name)
         combined_query = f"{clean_task_name} {clean_error_q}"[:80]
-
+        
         github_context = await LuauKnowledgeScraper.search_github_luau(combined_query)
         devforum_context = await LuauKnowledgeScraper.search_devforum(combined_query)
         reddit_context = await LuauKnowledgeScraper.search_reddit_robloxdev(combined_query)
-
+        
         if github_context or devforum_context or reddit_context:
-            base_prompt += "[KNOWLEDGE BASE]\n"
-            if github_context:
-                base_prompt += github_context + "\n"
-            if devforum_context:
-                base_prompt += devforum_context + "\n"
-            if reddit_context:
-                base_prompt += reddit_context + "\n"
-
+            base_prompt += "[KNOWLEDGE BASE (HASIL SCRAPING GITHUB RAW, DEVFORUM & REDDIT)]\n"
+            if github_context: base_prompt += github_context + "\n"
+            if devforum_context: base_prompt += devforum_context + "\n"
+            if reddit_context: base_prompt += reddit_context + "\n"
+            base_prompt += "DOKTRIN ADAPTASI: 1. Filter Standalone. 2. Musnahkan ID Aset. 3. Jangan salin bulat-bulat, adaptasikan!\n\n"
+        
         base_prompt += (
             f"[KODE YANG RUSAK]:\n{MARKDOWN_BLOCK}lua\n{safe_broken_code}\n{MARKDOWN_BLOCK}\n\n"
             f"[INSTRUKSI BEDAH MUTLAK]:\n"
             f"1. Identifikasi EXACT baris penyebab error.\n"
             f"2. Pahami root cause dari error type '{error_type}'.\n"
-            f"3. Ubah HANYA baris yang rusak.\n"
-            f"4. Wajib mengembalikan file utuh setelah diperbaiki.\n"
+            f"3. Ubah HANYA baris yang rusak tersebut. Jika perlu dirombak, rombak secara logis.\n"
+            f"4. Pastikan semua variabel dan anotasi tipe (strict mode luau) 99% tidak mungkin eror.\n"
+            f"5. Wajib mengembalikan file utuh (bukan diff) setelah diperbaiki.\n\n"
         )
 
         mcp_history_log = ""
         max_mcp_turns = 4 if ROBLOX_MCP_URL else 1
 
         for turn in range(max_mcp_turns):
+            if ROBLOX_MCP_URL:
+                console_terminal_interface.print(f"[dim yellow]   [Iterative Debugging] Turn {turn+1}/{max_mcp_turns}...[/dim yellow]")
+            
             dynamic_prompt = base_prompt
             if mcp_history_log:
-                dynamic_prompt += f"\n\n[RIWAYAT MCP TOOL EXECUTION]:\n{mcp_history_log}"
+                dynamic_prompt += f"\n\n[RIWAYAT MCP TOOL EXECUTION (STUDIO LIVE)]:\n{mcp_history_log}\nPelajari log ini sebelum bertindak!"
 
             success, result_data = await execute_gemini_cli_pure(agent, self.sys_inst, dynamic_prompt)
 
             if not success:
-                console_terminal_interface.print(f"[bold red]   [Healer Error] {result_data[:200]}[/bold red]")
+                console_terminal_interface.print(f"[bold red]   [Aider CLI Error] {result_data[:200]}[/bold red]")
                 return broken_code
 
             if '"mcp_tool_call"' in result_data:
@@ -425,18 +468,18 @@ class AutoHealerAgent:
                     tool_data = json.loads(result_data)["mcp_tool_call"]
                     tool_name = tool_data.get("tool_name", "unknown")
                     tool_args = tool_data.get("args", {})
-
+                    
                     console_terminal_interface.print(f"[bold cyan]   🛠️ [MCP Action] AI Menjalankan Studio Tool: {tool_name}[/bold cyan]")
-
+                    
                     tool_response = await RobloxMCPBridge.execute_tool(tool_name, tool_args)
-                    mcp_history_log += f"\n--- CALL: {tool_name} ---\nRESULT: {tool_response[:1000]}\n"
-                    continue
+                    mcp_history_log += f"\n--- CALL: {tool_name} ---\nARGS: {json.dumps(tool_args)}\nRESULT: {tool_response[:1000]}\n"
+                    continue 
                 except Exception as e:
                     mcp_history_log += f"\n--- CALL FAILED ---\nERROR: {str(e)}\n"
                     continue
             else:
                 return extract_pure_luau_code(result_data)
-
+        
         return broken_code
 
 
@@ -444,10 +487,13 @@ class OmniSynthesizerAgent:
     def __init__(self, healer_agent: AutoHealerAgent):
         self.healer_agent = healer_agent
         self.sys_inst = (
-            "BERPIKIRLAH SECARA MENDALAM DAN EKSTENSIF SEBELUM MENJAWAB! "
+            "<|think|>\n"
+            "BERPIKIRLAH SECARA MENDALAM DAN EKSTENSIF (REASON LONGER) SEBELUM MENJAWAB! Evaluasi setiap elemen fisika dan arsitektur sebelum Anda menulis kode. "
             "Anda adalah Arsitek Penyatuan Multiverse Luau tingkat militer. Tulis kode Luau Murni. "
-            "PROTOKOL MUTLAK: Wajib menganalisis kode sebelum diberikan. "
-            "Kode yang dibuat harus 99% tidak mungkin eror. "
+            "PROTOKOL MUTLAK: Wajib Searching github untuk mengetahui kode lua nya eror atau tidak "
+            "dan analisis menggunakan lune secara internal sebelum diberikan pada saya. "
+            "Anda harus menerapkan pengujian tingkat militer di logika Anda sehingga "
+            "kode yang dibuat 99% tidak mungkin eror. "
             "Wajib --!strict. Fokus pada efisiensi matematika dan pencegahan memory leak."
         )
 
@@ -463,124 +509,97 @@ class OmniSynthesizerAgent:
         previous_code: str,
     ) -> Tuple[bool, str, str]:
         comprehensive_prompt = (
-            f"[KEYWORD WAJIB]: {', '.join(req_keys) if req_keys else 'Tidak ada keyword khusus'}\n"
-            f"[KEYWORD HARAM]: {', '.join(forb_keys) if forb_keys else 'Tidak ada batasan khusus'}\n\n"
-            f"[CHEAT SHEET KEAMANAN MILITER]\n"
-            f"01. Baris pertama WAJIB `--!strict`.\n"
-            f"02. HARAM: `_G`, `shared`, `loadstring`, `getfenv`, `spawn()`, `delay()`.\n"
-            f"03. Loop `while true do` WAJIB gunakan `task.wait()` atau RunService.\n"
-            f"04. ANTI-MEMORY LEAK: Setiap koneksi event WAJIB disimpan ke variabel.\n"
-            f"05. FAULT-TOLERANCE: Operasi DataStore WAJIB dibungkus `pcall()`.\n"
-            f"06. ZERO-TRUST: OnServerEvent WAJIB validasi dengan `typeof()`.\n\n"
-            f"[HUKUM GAME ALAM SEMESTA]\n"
-            f"1. Game Ekstraksi Survival. Sudut pandang First-Person.\n"
-            f"2. Pisahkan LOBBY dan DUNIA FANTASI secara fisik dan logis.\n"
-            f"3. Raw material HARAM punya Recipe/Durability/ArmorTier.\n"
-            f"4. Senjata modern tembakan Raycast, TIDAK BOLEH punya Damage variable.\n"
-            f"5. Armor WAJIB punya ArmorTier (1-6), Durability, MaterialType.\n\n"
+            f"[KEYWORD WAJIB (SYARAT LULUS COMPILER)]: Anda HARUS menggunakan keyword/fungsi berikut dalam skrip Anda: {', '.join(req_keys) if req_keys else 'Tidak ada keyword khusus'}\n"
+            f"[KEYWORD HARAM (AKAN DITOLAK COMPILER)]: JANGAN PERNAH menggunakan keyword berikut: {', '.join(forb_keys) if forb_keys else 'Tidak ada batasan khusus'}\n\n"
+            f"[CHEAT SHEET 14 TITIK KEAMANAN MILITER (WAJIB DIPATUHI OLEH SYNTHESIZER!)]\n"
+            f"01. Baris pertama skrip WAJIB mendeklarasikan `--!strict`.\n"
+            f"02. HARAM & DILARANG KERAS menggunakan: `_G`, `shared`, `loadstring`, `getfenv`, `spawn()`, `delay()`.\n"
+            f"03. JIKA ada loop `while true do`, Anda WAJIB mendefinisikan `local RunService = game:GetService(\"RunService\")` dan menggunakan `RunService.Heartbeat:Wait()` atau `task.wait()`.\n"
+            f"04. ANTI-MEMORY LEAK: Setiap koneksi event WAJIB disimpan ke variabel!\n"
+            f"05. FAULT-TOLERANCE: Operasi `GetAsync`, `SetAsync`, dll WAJIB 100% dibungkus dalam `pcall()`.\n"
+            f"06. ZERO-TRUST EXPLOIT: Jika Anda membuat `.OnServerEvent:Connect`, Anda WAJIB memvalidasi variabel dari client menggunakan `typeof()`!\n\n"
+            "[INSTRUKSI TUGAS KHUSUS]:\n"
         )
 
         ecosystem_context = await retrieve_ecosystem_context()
         if ecosystem_context:
-            comprehensive_prompt += f"[REFERENSI MODUL GLOBAL]:\n{ecosystem_context}\n\n"
-        comprehensive_prompt += f"[INSTRUKSI TUGAS ({module_name})]:\n{task_description}\n\n"
+            comprehensive_prompt += f"[REFERENSI MODUL GLOBAL UNTUK REQUIRE()]:\n{ecosystem_context}\n\n"
+        comprehensive_prompt += f"[INSTRUKSI TUGAS KHUSUS ({module_name})]:\n{task_description}\n\n"
 
         if previous_error and previous_code:
             safe_code = extract_pure_luau_code(previous_code)
             comprehensive_prompt += (
-                f"[CRITICAL ERROR DARI AGEN SEBELUMNYA]:\n"
+                f"[CRITICAL ERROR DARI AGEN SEBELUMNYA - PERBAIKI MATEMATIS]:\n"
                 f"{MARKDOWN_BLOCK}lua\n{safe_code}\n{MARKDOWN_BLOCK}\n"
-                f"[ERROR LOG]:\n{previous_error}\n\n"
-                "[HUKUM PERBAIKAN]:\n"
-                "1. Dilarang merombak bagian kode yang sudah BENAR.\n"
-                "2. Jika gagal di banyak titik, rombak bagian yang rusak secara masif.\n"
-                "3. Berikan kode utuh yang siap jalan.\n"
+                f"[ERROR LOG DARI COMPILER]:\n{previous_error}\n\n"
             )
 
         console_terminal_interface.print(
-            f"[bold cyan]  [{agent['name']}] Memproses {module_name}... (Sequential Queue)[/bold cyan]"
+            f"[bold cyan]  [{agent['name']}] Memproses {module_name}... (Antri Sequential - Standar Militer)[/bold cyan]"
         )
-
+        
+        console_terminal_interface.print(f"[dim cyan]  🔍 Menjalankan RAG Pipeline: Membaca Kitab DevForum & Ekstrak Raw GitHub...[/dim cyan]")
         clean_task_query = LuauKnowledgeScraper._clean_task_query(module_name)
         github_context = await LuauKnowledgeScraper.search_github_luau(clean_task_query)
         devforum_context = await LuauKnowledgeScraper.search_devforum(clean_task_query)
         reddit_context = await LuauKnowledgeScraper.search_reddit_robloxdev(clean_task_query)
-
+        
         if github_context or devforum_context or reddit_context:
-            live_rag_data = "[KNOWLEDGE BASE (SCRAPING GITHUB, DEVFORUM & REDDIT)]\n"
-            if github_context:
-                live_rag_data += github_context + "\n"
-            if devforum_context:
-                live_rag_data += devforum_context + "\n"
-            if reddit_context:
-                live_rag_data += reddit_context + "\n"
+            live_rag_data = "[KNOWLEDGE BASE (HASIL SCRAPING GITHUB RAW, DEVFORUM & REDDIT)]\n"
+            if github_context: live_rag_data += github_context + "\n"
+            if devforum_context: live_rag_data += devforum_context + "\n"
+            if reddit_context: live_rag_data += reddit_context + "\n"
+            live_rag_data += "GUNAKAN TEKS KODE DAN DISKUSI DI ATAS SEBAGAI INSPIRASI/CONTEKAN CARA MENYELESAIKAN TUGAS INI.\n"
             comprehensive_prompt += live_rag_data
-
+            console_terminal_interface.print(f"[dim green]  ✅ DevForum dan Raw GitHub disuntikkan ke prompt.[/dim green]")
+        
         success, result_data = await execute_gemini_cli_pure(agent, self.sys_inst, comprehensive_prompt)
 
         if success:
             code_attempt = result_data
             if '"mcp_tool_call"' in code_attempt:
-                return False, "Agent Error: Synthesizer tidak boleh memanggil Tool MCP.", previous_code
+                return False, "Agent Error: Synthesizer tidak boleh memanggil Tool MCP. Hanya Healer yang diizinkan.", previous_code
 
             if previous_code and previous_error:
                 safe_prev_code = extract_pure_luau_code(previous_code)
                 similarity = difflib.SequenceMatcher(None, safe_prev_code, code_attempt).ratio()
+                
+                if similarity < 0.15:
+                    console_terminal_interface.print(f"[bold red]  [SANITY CHECK GAGAL]: Kode baru hanya {similarity*100:.1f}% mirip. File terindikasi kosong/halusinasi. DITOLAK.[/bold red]")
+                    return False, f"SANITY_CHECK_FAILED: Kode baru terlalu berbeda ({similarity*100:.1f}% similarity).", previous_code
 
-                if similarity < 0.15 and len(code_attempt) < 200:
-                    console_terminal_interface.print(f"[bold red]  [SANITY CHECK GAGAL]: Kode baru terlalu pendek atau berbeda drastis. DITOLAK.[/bold red]")
-                    return False, "SANITY_CHECK_FAIL: Kode kosong/tidak valid", previous_code
-
-            omni_valid, omni_msg = AbsoluteOmniValidator.execute_validation(code_attempt, req_keys, forb_keys)
-            if not omni_valid:
-                console_terminal_interface.print(f"[bold red]  [OmniValidator GAGAL]: {omni_msg[:300]}[/bold red]")
-                healed_code = await self.healer_agent.heal_code(
-                    code_attempt, omni_msg, module_name, agent, task_description, ecosystem_context,
-                    target_filepath=target_filepath
-                )
-                omni_valid2, omni_msg2 = AbsoluteOmniValidator.execute_validation(healed_code, req_keys, forb_keys)
-                if not omni_valid2:
-                    return False, omni_msg2, healed_code
-
-                ast_ok, ast_msg = await NativeLuauCompiler.execute_native_ast_verification(healed_code, module_name)
-                if not ast_ok:
-                    return False, ast_msg, healed_code
-
-                os.makedirs(os.path.dirname(target_filepath), exist_ok=True)
-                with open(target_filepath, "w", encoding="utf-8") as f:
-                    f.write(healed_code)
-                await save_verified_module(module_name, target_filepath, healed_code)
-                console_terminal_interface.print(f"[bold green]  ✅ {module_name} LULUS setelah Healer bedah![/bold green]")
-                return True, "", healed_code
+            omni_ok, omni_msg = AbsoluteOmniValidator.execute_validation(code_attempt, req_keys, forb_keys)
+            if not omni_ok:
+                console_terminal_interface.print(f"[bold red]  [OmniValidator] {omni_msg[:200]}[/bold red]")
+                return False, omni_msg, code_attempt
 
             ast_ok, ast_msg = await NativeLuauCompiler.execute_native_ast_verification(code_attempt, module_name)
             if not ast_ok:
-                console_terminal_interface.print(f"[bold red]  [AST FAILED]: {ast_msg[:300]}[/bold red]")
+                console_terminal_interface.print(f"[bold yellow]  [AST] {ast_msg[:200]}[/bold yellow]")
                 healed_code = await self.healer_agent.heal_code(
-                    code_attempt, ast_msg, module_name, agent, task_description, ecosystem_context,
+                    code_attempt, ast_msg, module_name, agent,
+                    task_description=task_description,
+                    ecosystem_context=ecosystem_context,
                     target_filepath=target_filepath
                 )
-                omni_valid2, omni_msg2 = AbsoluteOmniValidator.execute_validation(healed_code, req_keys, forb_keys)
-                if not omni_valid2:
-                    return False, omni_msg2, healed_code
+                
+                healed_omni_ok, healed_omni_msg = AbsoluteOmniValidator.execute_validation(healed_code, req_keys, forb_keys)
+                if not healed_omni_ok:
+                    return False, healed_omni_msg, healed_code
+                
+                healed_ast_ok, healed_ast_msg = await NativeLuauCompiler.execute_native_ast_verification(healed_code, module_name)
+                if not healed_ast_ok:
+                    return False, healed_ast_msg, healed_code
 
-                ast_ok2, ast_msg2 = await NativeLuauCompiler.execute_native_ast_verification(healed_code, module_name)
-                if not ast_ok2:
-                    return False, ast_msg2, healed_code
-
-                os.makedirs(os.path.dirname(target_filepath), exist_ok=True)
-                with open(target_filepath, "w", encoding="utf-8") as f:
-                    f.write(healed_code)
-                await save_verified_module(module_name, target_filepath, healed_code)
-                console_terminal_interface.print(f"[bold green]  ✅ {module_name} LULUS setelah Healer bedah![/bold green]")
-                return True, "", healed_code
+                code_attempt = healed_code
 
             os.makedirs(os.path.dirname(target_filepath), exist_ok=True)
             with open(target_filepath, "w", encoding="utf-8") as f:
                 f.write(code_attempt)
+
             await save_verified_module(module_name, target_filepath, code_attempt)
-            console_terminal_interface.print(f"[bold green]  ✅ {module_name} LULUS! Disimpan ke {target_filepath}[/bold green]")
+            console_terminal_interface.print(f"[bold green]  ✅ [{module_name}] SUKSES! Disimpan & Diverifikasi.[/bold green]")
             return True, "", code_attempt
 
-        console_terminal_interface.print(f"[bold red]  [CLI FAILED]: {result_data[:300]}[/bold red]")
-        return False, result_data, previous_code
+        else:
+            return False, result_data, previous_code
