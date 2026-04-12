@@ -9,7 +9,7 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM SIGHUP EXIT
 
-echo "[Sistem] Menjalankan Nexus Healing Agent di background..."
+echo "[Sistem] Menjalankan Nexus Healing Agent di background (Output diarahkan ke nexus_healer.log)..."
 python3 nexus_healer.py > nexus_healer.log 2>&1 &
 HEALER_PID=$!
 
