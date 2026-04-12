@@ -4,6 +4,7 @@ from rich.console import Console
 from dotenv import load_dotenv
 
 _env_paths = [
+    "/home/ubuntu/.env.nexus",
     os.path.join(os.path.dirname(__file__), ".env.nexus"),
     os.path.join(os.path.dirname(__file__), ".env"),
     ".env.nexus",
@@ -70,6 +71,7 @@ _gemini_cli_candidates = [
     os.path.expanduser("~/.local/share/pnpm/gemini"),
     "/usr/local/bin/gemini",
     "/usr/bin/gemini",
+    "/home/codespace/nvm/current/bin/gemini",
 ]
 
 def _find_gemini_cli() -> str:
@@ -84,13 +86,6 @@ def _find_gemini_cli() -> str:
 
 GEMINI_CLI_PATH = _find_gemini_cli()
 console_terminal_interface.print(f"[dim cyan]Gemini CLI Path: {GEMINI_CLI_PATH}[/dim cyan]")
-
-ROBLOX_MCP_URL = os.getenv("ROBLOX_MCP_URL", "")
-if ROBLOX_MCP_URL:
-    console_terminal_interface.print(f"[bold green]🔌 MCP Server Terhubung: {ROBLOX_MCP_URL}[/bold green]")
-else:
-    console_terminal_interface.print(f"[dim yellow]⚠️ ROBLOX_MCP_URL kosong. Mode otonom buta.[/dim yellow]")
-
 
 class APIKeyRotator:
     _current_index = 0
@@ -121,3 +116,9 @@ class APIKeyRotator:
             console_terminal_interface.print("[bold red]CIRCUIT BREAKER AKTIF: Limit harian tercapai.[/bold red]")
             return False
         return True
+
+ROBLOX_MCP_URL = os.getenv("ROBLOX_MCP_URL", "")
+if ROBLOX_MCP_URL:
+    console_terminal_interface.print(f"[bold green]🔌 MCP Server Terhubung: {ROBLOX_MCP_URL} (Iterative Debugging Aktif!)[/bold green]")
+else:
+    console_terminal_interface.print(f"[dim yellow]⚠️ ROBLOX_MCP_URL kosong. Mode otonom buta (Tanpa Studio Live Playtest).[/dim yellow]")
