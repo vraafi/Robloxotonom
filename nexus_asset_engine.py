@@ -284,7 +284,7 @@ class ReModelRunner:
     untuk menguji apakah aset dapat dimasukkan ke place file dengan benar.
 
     Install remodel di VPS:
-      wget https://github.com/rojo-rbx/remodel/releases/download/v0.11.0/remodel-linux.zip
+      wget https://github.com/rojo-rbx/remodel/releases/download/v0.11.0/remodel-0.11.0-linux-x86_64.zip
       unzip remodel-linux.zip -d ~/FantasyExtraction_Roblox_TrueApex/
       chmod +x ~/FantasyExtraction_Roblox_TrueApex/remodel
     """
@@ -336,7 +336,7 @@ class ReModelRunner:
             return True, (
                 "⚠️ remodel belum terinstall — tes headless dilewati. "
                 "Install: wget https://github.com/rojo-rbx/remodel/releases/"
-                "download/v0.11.0/remodel-linux.zip"
+                "download/v0.11.0/remodel-0.11.0-linux-x86_64.zip"
             )
 
         script_content = cls._build_test_script(task_name, asset_type, rbxmx_path)
