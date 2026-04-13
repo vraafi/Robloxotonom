@@ -82,9 +82,6 @@ def _panggil_gemini_cli_dengan_rotasi(prompt_text: str, api_key_aktif: str, mode
         _gemini_binary,
         "-m", model_name,
         "-y",
-        "--temp", "1.0",
-        "--top-p", "0.95",
-        "--top-k", "64",
         "-p", prompt_text,
     ]
 
@@ -149,7 +146,16 @@ Anda adalah Dokter Bedah Kode Senior.
 Tugas Anda adalah memperbaiki file tersebut menggunakan `aider` format.
 """
         env_vars = os.environ.copy()
-        
+
+        # Ambil API key dari rotator nexus agar tidak rate limit key yang sama
+        try:
+            from nexus_agents import _key_rotator as _nexus_rotator
+            aider_api_key = _nexus_rotator.get_key()
+            if aider_api_key:
+                env_vars["GEMINI_API_KEY"] = aider_api_key
+        except Exception:
+            pass
+
         command = [
             "aider",
             target_filepath,
