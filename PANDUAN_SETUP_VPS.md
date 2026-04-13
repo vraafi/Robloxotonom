@@ -69,15 +69,16 @@ rojo --version
 
 ## Tahap 4: Instalasi Mesin AI (Gemini CLI)
 
-Sistem ini memanggil gemini-cli langsung dari Google dengan konfigurasi khusus temperature 1.0 dan top_p 0.95 untuk performa optimal Gemma 4 31B IT.
+Sistem ini memanggil gemini-cli langsung dari Google untuk mengeksekusi model Gemma 4 31B IT secara non-interaktif (headless mode).
 
 ```bash
-npm install -g @google/generative-ai-cli
+npm install -g @google/gemini-cli
 ```
 
 Verifikasi instalasi:
 ```bash
 gemini --version
+# Harus menampilkan: 0.37.1 (atau lebih baru)
 ```
 
 ---
