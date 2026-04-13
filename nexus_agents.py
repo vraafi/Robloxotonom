@@ -25,6 +25,7 @@ from nexus_config import (
 )
 from nexus_database import retrieve_ecosystem_context, save_verified_module
 from nexus_compiler import AbsoluteOmniValidator, NativeLuauCompiler
+from nexus_asset_engine import AssetOrchestrator, detect_asset_type
 
 _key_rotator = ApexKeyRotator([a["api_key"] for a in ACTIVE_AGENTS if a["api_key"]])
 
@@ -596,6 +597,19 @@ class OmniSynthesizerAgent:
 
             await save_verified_module(module_name, target_filepath, code_attempt)
             console_terminal_interface.print(f"[bold green]  ✅ [{module_name}] SUKSES! Disimpan & Diverifikasi.[/bold green]")
+            # === NEXUS ASSET ENGINE HOOK (TAMBAHAN BARU) ===
+            _asset_type = detect_asset_type(module_name)
+            if _asset_type != "LUAU":
+                try:
+                    _asset_ok, _asset_path, _asset_err = await AssetOrchestrator.process_asset_task(module_name, code_attempt)
+                    if _asset_ok:
+                        console_terminal_interface.print(f"[bold green]  ✅ [Asset Engine] Aset tersimpan: {_asset_path}[/bold green]")
+                    else:
+                        if _asset_err != "BUKAN_ASET":
+                            console_terminal_interface.print(f"[bold yellow]  ⚠️ [Asset Engine] {_asset_err[:150]}[/bold yellow]")
+                except Exception as _ae:
+                    console_terminal_interface.print(f"[dim yellow]  [Asset Engine] Exception (non-fatal): {_ae}[/dim yellow]")
+            # === AKHIR ASSET ENGINE HOOK ===
             return True, "", code_attempt
 
         else:
