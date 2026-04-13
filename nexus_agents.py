@@ -493,6 +493,15 @@ class OmniSynthesizerAgent:
             "Anda harus menerapkan pengujian tingkat militer di logika Anda sehingga "
             "kode yang dibuat 99% tidak mungkin eror. "
             "Wajib --!strict. Fokus pada efisiensi matematika dan pencegahan memory leak."
+            "KESADARAN TIPE ASET: Baca nama task dengan cermat sebelum menulis kode. "
+            "Jika nama task mengandung kata GUI/UI/HUD/MENU/SCREEN/INVENTORY/SHOP/BUTTON/FRAME/HOTBAR/COMPASS/MINIMAP/SCOREBOARD/HEALTH_BAR/STAMINA_BAR → "
+            "kamu sedang membuat UI Roblox (LocalScript di dalam ScreenGui). "
+            "Jika nama task mengandung kata MODEL/PROP/BUILDING/TREE/ROCK/VEHICLE/WEAPON_MODEL/ARMOR_MODEL/CHEST/BARREL/CRATE/DOOR → "
+            "kamu sedang membuat logika 3D Model (Script di dalam Model di Workspace). "
+            "Jika nama task mengandung kata WORLD/TERRAIN/LIGHTING/ATMOSPHERE/SKYBOX/SPAWN/ZONE/MAP/AMBIENT/FOG → "
+            "kamu sedang membuat script lingkungan dunia (Script di ServerScriptService atau Workspace). "
+            "Kode Luau yang kamu hasilkan akan OTOMATIS dibungkus ke file .rbxmx oleh Asset Engine. "
+            "Tugas kamu: tulis HANYA logika Luau murni yang sesuai tipe task tersebut."
         )
 
     async def synthesize_handoff(
@@ -516,6 +525,21 @@ class OmniSynthesizerAgent:
             f"04. ANTI-MEMORY LEAK: Setiap koneksi event WAJIB disimpan ke variabel!\n"
             f"05. FAULT-TOLERANCE: Operasi `GetAsync`, `SetAsync`, dll WAJIB 100% dibungkus dalam `pcall()`.\n"
             f"06. ZERO-TRUST EXPLOIT: Jika Anda membuat `.OnServerEvent:Connect`, Anda WAJIB memvalidasi variabel dari client menggunakan `typeof()`!\n\n"
+            f"07. ATURAN ASET GUI (jika nama task = GUI/UI/HUD/MENU/SCREEN/INVENTORY dll):\n"
+            f"    → Tulis kode sebagai LocalScript. Gunakan: game:GetService(\"Players\").LocalPlayer, "
+            f"PlayerGui, ScreenGui, Frame, TextLabel, TextButton, ImageLabel, UDim2, Color3.\n"
+            f"    → WAJIB membuat fungsi update UI dan menghubungkan ke event (misalnya RemoteEvent, ValueChanged).\n"
+            f"    → DILARANG: game:GetService(\"Players\") tanpa .LocalPlayer di LocalScript.\n\n"
+            f"08. ATURAN ASET MODEL/PROP (jika nama task = MODEL/PROP/BUILDING/TREE/ROCK/VEHICLE dll):\n"
+            f"    → Tulis kode sebagai Script (bukan LocalScript). Parent akan menjadi Model di Workspace.\n"
+            f"    → Gunakan: script.Parent untuk mengakses Model, weld/constraint untuk fisika bagian.\n"
+            f"    → WAJIB: CanCollide = true pada semua BasePart, Anchored sesuai kebutuhan.\n\n"
+            f"09. ATURAN ASET WORLD/LINGKUNGAN (jika nama task = WORLD/TERRAIN/LIGHTING/ATMOSPHERE dll):\n"
+            f"    → Tulis kode sebagai Script yang jalan di server. Gunakan: game:GetService(\"Lighting\"), "
+            f"game:GetService(\"TweenService\"), workspace.Terrain.\n"
+            f"    → WAJIB menggunakan RunService.Heartbeat atau task.wait() untuk loop, BUKAN while true do tanpa wait.\n\n"
+            f"10. VALIDASI ASSET ENGINE: Kode yang kamu hasilkan akan diuji validator XML dan remodel headless. "
+            f"Pastikan --!strict di baris pertama, tidak ada syntax error, dan semua service di-GetService dengan benar.\n\n"
             "[INSTRUKSI TUGAS KHUSUS]:\n"
         )
 
