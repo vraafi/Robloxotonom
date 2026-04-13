@@ -300,7 +300,6 @@ class ReModelRunner:
 
         if asset_type == "GUI":
             return (
-                f'local remodel = require("remodel")\n'
                 f'if not remodel.isFile("{compiled}") then\n'
                 f'  print("SKIP: build.rbxl belum ada.")\n'
                 f'  return\n'
@@ -315,7 +314,6 @@ class ReModelRunner:
             )
         elif asset_type in ("MODEL", "WORLD"):
             return (
-                f'local remodel = require("remodel")\n'
                 f'if not remodel.isFile("{compiled}") then\n'
                 f'  print("SKIP: build.rbxl belum ada.")\n'
                 f'  return\n'
