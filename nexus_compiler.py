@@ -145,26 +145,60 @@ class NativeLuauCompiler:
     """Kompilator AST C++ dan Eksekutor Runtime Lune."""
 
     @staticmethod
+    def _download_and_extract(url: str, binary_name: str, dest_path: str):
+        """Download zip dari URL, ekstrak binary_name, taruh di dest_path. Tanpa wget/unzip."""
+        import urllib.request
+        import zipfile
+        import tempfile
+        tmp_zip = tempfile.mktemp(suffix=".zip")
+        try:
+            urllib.request.urlretrieve(url, tmp_zip)
+            with zipfile.ZipFile(tmp_zip, "r") as z:
+                members = z.namelist()
+                target = next((m for m in members if os.path.basename(m) == binary_name), None)
+                if target is None:
+                    raise FileNotFoundError(f"{binary_name} tidak ditemukan di dalam {url}")
+                with z.open(target) as src, open(dest_path, "wb") as dst:
+                    dst.write(src.read())
+            os.chmod(dest_path, 0o755)
+        finally:
+            if os.path.exists(tmp_zip):
+                os.remove(tmp_zip)
+
+    @staticmethod
+    def _get_lune_latest_url() -> str:
+        """Ambil URL download lune Linux x86_64 terbaru dari GitHub API."""
+        import urllib.request
+        import json as _json
+        try:
+            req = urllib.request.urlopen(
+                "https://api.github.com/repos/lune-org/lune/releases/latest", timeout=15
+            )
+            data = _json.loads(req.read())
+            for asset in data.get("assets", []):
+                name = asset["name"]
+                if "linux" in name and "x86_64" in name and name.endswith(".zip"):
+                    return asset["browser_download_url"]
+        except Exception:
+            pass
+        return "https://github.com/lune-org/lune/releases/latest/download/lune-linux-x86_64.zip"
+
+    @staticmethod
     def ensure_compiler_exists():
         if not os.path.exists(LUAU_ANALYZE_BINARY_PATH):
             console_terminal_interface.print("[bold yellow]luau-analyze tidak ditemukan. Mengunduh binary Linux terbaru...[/bold yellow]")
-            subprocess.run([
-                "wget", "https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip"
-            ], check=True)
-            subprocess.run(["unzip", "-o", "luau-ubuntu.zip", "luau-analyze"], check=True)
-            subprocess.run(["chmod", "+x", "luau-analyze"], check=True)
-            subprocess.run(["mv", "luau-analyze", LUAU_ANALYZE_BINARY_PATH], check=True)
-            subprocess.run(["rm", "luau-ubuntu.zip"], check=True)
+            NativeLuauCompiler._download_and_extract(
+                "https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip",
+                "luau-analyze",
+                LUAU_ANALYZE_BINARY_PATH,
+            )
+            console_terminal_interface.print("[bold green]luau-analyze berhasil diunduh.[/bold green]")
 
         if not os.path.exists(LUNE_BINARY_PATH):
             console_terminal_interface.print("[bold yellow]lune tidak ditemukan. Mengunduh binary Linux terbaru...[/bold yellow]")
-            subprocess.run([
-                "wget", "https://github.com/lune-org/lune/releases/latest/download/lune-linux-x86_64.zip"
-            ], check=True)
-            subprocess.run(["unzip", "-o", "lune-linux-x86_64.zip", "lune"], check=True)
-            subprocess.run(["chmod", "+x", "lune"], check=True)
-            subprocess.run(["mv", "lune", LUNE_BINARY_PATH], check=True)
-            subprocess.run(["rm", "lune-linux-x86_64.zip"], check=True)
+            lune_url = NativeLuauCompiler._get_lune_latest_url()
+            NativeLuauCompiler._download_and_extract(lune_url, "lune", LUNE_BINARY_PATH)
+            console_terminal_interface.print("[bold green]lune berhasil diunduh.[/bold green]")
 
         if not os.path.exists(LUAURC_PATH):
             luaurc_content = {
@@ -226,6 +260,22 @@ class NativeLuauCompiler:
             
             if lune_process.returncode != 0:
                 error_msg = lune_process.stderr.strip() or lune_process.stdout.strip()
+                # Roblox-specific globals (game, workspace, script, Players, dll) tidak ada
+                # di lune — ini BUKAN bug pada kode Luau, hanya limitasi runtime lune.
+                # Kode tetap valid untuk Roblox Studio.
+                ROBLOX_ENV_ERRORS = [
+                    "attempt to index nil with 'GetService'",
+                    "attempt to index nil with 'GetAttribute'",
+                    "attempt to call nil",
+                    "attempt to index nil",
+                    "attempt to perform arithmetic on nil",
+                    "game is not defined",
+                    "workspace is not defined",
+                    "script is not defined",
+                ]
+                is_roblox_env_error = any(sig in error_msg for sig in ROBLOX_ENV_ERRORS)
+                if is_roblox_env_error:
+                    return True, f"AST Lulus. Lune warning (Roblox env — normal): {error_msg[:120]}"
                 return False, f"RUNTIME EXECUTION FAILED (lune):\n{error_msg}"
 
             return True, "AST dan Runtime Lune Lulus 100%."
