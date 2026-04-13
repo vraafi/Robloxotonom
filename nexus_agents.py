@@ -268,9 +268,6 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                         GEMINI_CLI_PATH,
                         "-m", model_name,
                         "-y",
-                        "--temp", "1.0",
-                        "--top-p", "0.95",
-                        "--top-k", "64",
                         "-p", "Baca seluruh data instruksi dari stdin. Keluarkan JSON murni.",
                     ]
 
