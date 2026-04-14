@@ -1039,6 +1039,49 @@ class TelegramPolyglotListener:
         )
 
 
+    async def _call_gemini_chat(self, system_prompt: str, user_text: str) -> str:
+        """
+        Panggil Gemini CLI khusus untuk percakapan chat.
+        Model: gemini-3.1-flash-lite-preview (ringan & cepat, hemat rate limit).
+        Berbeda dari _call_gemini milik PolyglotSynthesizerAgent yang pakai gemma-4-31b-it.
+        """
+        api_key = self.agent.rotator.get_key()
+        if not api_key:
+            return "ERROR: Tidak ada API key tersedia."
+
+        env = os.environ.copy()
+        env["GEMINI_API_KEY"] = api_key
+        env["CI"] = "true"
+        env["TERM"] = "dumb"
+        env["NO_COLOR"] = "1"
+
+        full_input = f"[SYSTEM]:\n{system_prompt}\n\n[USER]:\n{user_text}"
+        command = [
+            GEMINI_CLI_PATH,
+            "-m", "models/gemini-3.1-flash-lite-preview",
+            "-y",
+            "-p", "Jawab secara natural dan ringkas. Bukan kode, kecuali diminta.",
+        ]
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout_data, _ = await asyncio.wait_for(
+                process.communicate(input=full_input.encode("utf-8")),
+                timeout=30.0,
+            )
+            result = stdout_data.decode("utf-8", errors="replace").strip()
+            return result if result else "ERROR: Respons kosong."
+        except asyncio.TimeoutError:
+            return "ERROR: Timeout."
+        except Exception as e:
+            return f"ERROR: {e}"
+
     def _classify_intent_local(self, text: str) -> str:
         """
         Klasifikasi intent menggunakan rule-based (TANPA Gemini, TANPA API call).
@@ -1150,22 +1193,18 @@ class TelegramPolyglotListener:
             "Jangan buat kode kecuali diminta. Jangan bertele-tele."
         )
         try:
-            async with POLYGLOT_CLI_SEMAPHORE:
-                reply = await self.agent._call_gemini(system_prompt, text)
+            # Gunakan model ringan khusus chat (gemini-3.1-flash-lite-preview)
+            # agar tidak bersaing rate limit dengan pipeline coding (gemma-4-31b-it)
+            reply = await self._call_gemini_chat(system_prompt, text)
             if reply and not reply.startswith("ERROR") and len(reply.strip()) > 5:
                 await self._send(chat_id, reply.strip())
             else:
-                # Gemini gagal — fallback informatif
                 await self._send(
                     chat_id,
-                    "Sistem AI sedang sibuk memproses task Roblox. "
-                    "Untuk pertanyaan umum coba lagi sebentar, atau langsung minta saya buatkan kode!"
+                    "AI chat sedang sibuk. Coba lagi sebentar!"
                 )
         except Exception:
-            await self._send(
-                chat_id,
-                "Sistem AI sedang sibuk. Coba lagi sebentar, atau minta saya buatkan kode!"
-            )
+            await self._send(chat_id, "AI chat sedang sibuk. Coba lagi sebentar!")
 
     async def start_polling(self):
         console_terminal_interface.print(
