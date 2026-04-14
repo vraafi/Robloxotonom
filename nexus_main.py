@@ -34,6 +34,7 @@ from nexus_database import (
 )
 from nexus_compiler import NativeLuauCompiler
 from nexus_agents import OmniSynthesizerAgent, AutoHealerAgent, LuauKnowledgeScraper
+from nexus_healer import PreDeploymentValidator
 from nexus_polyglot import start_telegram_polling
 
 
@@ -659,6 +660,42 @@ async def run_orchestrator():
                 console_terminal_interface.print(
                     "[bold green]🎉 Evolusi 50 Selesai! Memulai Deployment Akhir (Telegram -> Roblox)...[/bold green]"
                 )
+
+                # ══════════════════════════════════════════════════════════════
+                # PRE-DEPLOYMENT VALIDATOR
+                # Pastikan 100% file sudah ada dan valid sebelum upload ke Roblox.
+                # Jika ada yang hilang → regenerasi dulu, deployment menunggu.
+                # Deployment DIBATALKAN jika masih ada file yang tidak bisa dibuat.
+                # ══════════════════════════════════════════════════════════════
+                _validator = PreDeploymentValidator()
+                _deploy_agent = ACTIVE_AGENTS[agent_idx % len(ACTIVE_AGENTS)]
+                _validation_task_queue = _build_task_queue()
+
+                console_terminal_interface.print(
+                    "[bold yellow]🛡️  [PRE-DEPLOY] Memverifikasi kelengkapan semua file game...[/bold yellow]"
+                )
+                _deploy_safe = await _validator.validate_and_complete(
+                    task_queue=_validation_task_queue,
+                    synthesizer=synthesizer,
+                    agent=_deploy_agent,
+                    notify_fn=send_telegram_notification,
+                )
+
+                if not _deploy_safe:
+                    console_terminal_interface.print(
+                        "[bold red]🚫 DEPLOYMENT DIBATALKAN: File tidak 100% lengkap setelah regenerasi.[/bold red]"
+                    )
+                    await send_telegram_notification(
+                        "🚫 DEPLOYMENT DIBATALKAN\n"
+                        "Pre-Deployment Validator menemukan file yang tidak bisa di-generate.\n"
+                        "Periksa log VPS untuk detail error.",
+                        important=True
+                    )
+                    break
+
+                # ══════════════════════════════════════════════════════════════
+                # Semua file sudah 100% valid → lanjutkan deployment
+                # ══════════════════════════════════════════════════════════════
                 if RobloxDeployer.compile_rojo():
                     await healer.initialize_and_scan()
                     await RobloxDeployer.publish(evolution_level)
