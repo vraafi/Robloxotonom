@@ -34,6 +34,7 @@ from nexus_database import (
 )
 from nexus_compiler import NativeLuauCompiler
 from nexus_agents import OmniSynthesizerAgent, AutoHealerAgent, LuauKnowledgeScraper
+from nexus_polyglot import start_telegram_polling
 
 
 # ==============================
@@ -495,6 +496,7 @@ async def run_orchestrator():
         NativeLuauCompiler.ensure_compiler_exists()
 
         asyncio.create_task(start_telemetry_webhook())
+        asyncio.create_task(start_telegram_polling())  # Polyglot Telegram Listener (Non-Blocking)
 
         healer = AutoHealerAgent()
         await healer.initialize_and_scan()
