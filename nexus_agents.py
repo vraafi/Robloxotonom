@@ -9,7 +9,7 @@ import tempfile
 import subprocess
 import requests
 import difflib
-from typing import Tuple
+from typing import Tuple, List
 
 from nexus_healer import ApexKeyRotator
 
@@ -26,12 +26,34 @@ from nexus_config import (
 from nexus_database import retrieve_ecosystem_context, save_verified_module
 from nexus_compiler import AbsoluteOmniValidator, NativeLuauCompiler
 from nexus_asset_engine import AssetOrchestrator, detect_asset_type
+from nexus_project_scanner import (
+    get_armor_hitbox_mandatory_template,
+    scan_existing_project,
+    search_github_for_hitbox_armor,
+    scan_and_repair_invalid_files,
+)
 
 _key_rotator = ApexKeyRotator([a["api_key"] for a in ACTIVE_AGENTS if a["api_key"]])
 
 CLI_EXECUTION_SEMAPHORE = asyncio.Semaphore(1)
 
 MARKDOWN_BLOCK = chr(96) * 3
+
+# ============================================================
+# GITHUB TOKEN — prioritaskan GITHUB_PERSONAL_ACCESS_TOKEN
+# ============================================================
+def _get_github_token() -> str:
+    """
+    Cari token GitHub dari env dengan urutan prioritas:
+    1. GITHUB_PERSONAL_ACCESS_TOKEN  (nama rahasia utama di project ini)
+    2. GITHUB_TOKEN                  (fallback umum)
+    Mengembalikan string kosong jika tidak ada.
+    """
+    return (
+        os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+        or os.getenv("GITHUB_TOKEN", "")
+    )
+
 
 def extract_pure_luau_code(raw_payload: str) -> str:
     """Penghancur Markdown tangguh. Membersihkan sisa simbol dan spasi liar."""
@@ -42,6 +64,7 @@ def extract_pure_luau_code(raw_payload: str) -> str:
     code = re.sub(r'\n*\s*`{3}\s*$', '', code)
     return code.strip()
 
+
 class RobloxMCPBridge:
     """
     Jembatan HTTP ke PC Lokal Anda (Roblox Studio MCP).
@@ -51,14 +74,14 @@ class RobloxMCPBridge:
     async def execute_tool(tool_name: str, arguments: dict) -> str:
         if not ROBLOX_MCP_URL:
             return "ERROR: ROBLOX_MCP_URL tidak dikonfigurasi di VPS Anda."
-        
+
         payload = {
             "jsonrpc": "2.0",
             "method": tool_name,
             "params": arguments,
-            "id": 1
+            "id": 1,
         }
-        
+
         def _post():
             try:
                 res = requests.post(f"{ROBLOX_MCP_URL}/jsonrpc", json=payload, timeout=45)
@@ -74,7 +97,7 @@ class RobloxMCPBridge:
 
 class LuauKnowledgeScraper:
     """Sistem RAG (Retrieval-Augmented Generation) Tingkat Militer Ekstrim."""
-    
+
     @staticmethod
     def _clean_error_query(raw_error: str) -> str:
         clean_text = re.sub(r'temp_[a-zA-Z0-9_]+\.luau:\d+:\s*', '', raw_error)
@@ -88,68 +111,262 @@ class LuauKnowledgeScraper:
         clean_name = clean_name.replace('_', ' ')
         return clean_name
 
+    # ------------------------------------------------------------------
+    # GITHUB CODE SEARCH  (butuh token sejak 2024)
+    # ------------------------------------------------------------------
     @staticmethod
     async def search_github_luau(query: str) -> str:
+        """
+        Cari kode Luau/Roblox di GitHub menggunakan Code Search API.
+        Menggunakan GITHUB_PERSONAL_ACCESS_TOKEN agar tidak kena rate-limit.
+        FIX: Perbaikan lambda closure bug di dalam for-loop dengan
+             menggunakan default-argument capture.
+        """
+        github_token = _get_github_token()
         try:
             encoded_query = query.replace(" ", "+")
-            url = f"https://api.github.com/search/code?q={encoded_query}+roblox+pushed:>2024-01-01&per_page=2"
-            
-            command = [
-                "curl", "-s", "--max-time", "15",
+            url = (
+                f"https://api.github.com/search/code"
+                f"?q={encoded_query}+language:lua+roblox"
+                f"&per_page=3&sort=indexed&order=desc"
+            )
+
+            headers_list = [
                 "-H", "Accept: application/vnd.github.v3+json",
-                "-H", "User-Agent: NexusAgent/1.0"
+                "-H", "User-Agent: NexusAgent/2.0",
             ]
-            
-            github_token = os.getenv("GITHUB_TOKEN", "")
             if github_token:
-                command.extend(["-H", f"Authorization: Bearer {github_token}"])
-                
-            command.append(url)
+                headers_list += ["-H", f"Authorization: Bearer {github_token}"]
+
+            command = ["curl", "-s", "--max-time", "15"] + headers_list + [url]
 
             loop = asyncio.get_event_loop()
-            proses = await loop.run_in_executor(None, lambda: subprocess.run(command, capture_output=True, text=True, timeout=20))
-            if proses.returncode == 0 and proses.stdout:
-                data = json.loads(proses.stdout)
-                items = data.get("items", [])[:2]
-                if items:
-                    res = "GITHUB ROBLOX KNOWLEDGE (RAW FILE EXTRACT):\n"
-                    for item in items:
-                        repo_name = item.get('repository', {}).get('full_name', '')
-                        file_name = item.get('name', '')
-                        file_api_url = item.get('url', '')
-                        
-                        if file_api_url:
-                            raw_cmd = [
-                                "curl", "-s", "--max-time", "10",
-                                "-H", "Accept: application/vnd.github.v3.raw",
-                                "-H", "User-Agent: NexusAgent/1.0"
-                            ]
-                            if github_token:
-                                raw_cmd.extend(["-H", f"Authorization: Bearer {github_token}"])
-                            raw_cmd.append(file_api_url)
-                            
-                            raw_proses = await loop.run_in_executor(None, lambda: subprocess.run(raw_cmd, capture_output=True, text=True, timeout=15))
-                            if raw_proses.returncode == 0 and raw_proses.stdout:
-                                raw_code = raw_proses.stdout[:4000]
-                                res += f"--- FULL/RAW FILE: {repo_name}/{file_name} ---\n{raw_code}\n\n"
-                    return res
-        except Exception:
-            pass
+            proses = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
+            )
+
+            if proses.returncode != 0 or not proses.stdout:
+                return ""
+
+            data = json.loads(proses.stdout)
+
+            # Cek apakah API menolak karena rate-limit / autentikasi
+            if "message" in data:
+                msg = data["message"].lower()
+                if "rate limit" in msg or "requires authentication" in msg:
+                    console_terminal_interface.print(
+                        f"[bold yellow][GitHub] Code Search terbatas: {data['message']}[/bold yellow]"
+                    )
+                    # Fallback ke Repository Search yang lebih terbuka
+                    return await LuauKnowledgeScraper.search_github_repositories(query)
+
+            items = data.get("items", [])[:3]
+            if not items:
+                return ""
+
+            res = "GITHUB ROBLOX KNOWLEDGE (RAW FILE EXTRACT):\n"
+            for item in items:
+                repo_name = item.get("repository", {}).get("full_name", "")
+                file_name = item.get("name", "")
+                file_api_url = item.get("url", "")
+
+                if not file_api_url:
+                    continue
+
+                # FIX lambda closure bug: ikat variabel loop dengan default arg
+                raw_headers = [
+                    "-H", "Accept: application/vnd.github.v3.raw",
+                    "-H", "User-Agent: NexusAgent/2.0",
+                ]
+                if github_token:
+                    raw_headers += ["-H", f"Authorization: Bearer {github_token}"]
+
+                raw_cmd = ["curl", "-s", "--max-time", "10"] + raw_headers + [file_api_url]
+
+                # Capture variabel loop secara eksplisit dengan default argument
+                raw_proses = await loop.run_in_executor(
+                    None,
+                    lambda cmd=raw_cmd: subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=15
+                    ),
+                )
+
+                if raw_proses.returncode == 0 and raw_proses.stdout:
+                    raw_code = raw_proses.stdout[:4000]
+                    res += f"--- FULL/RAW FILE: {repo_name}/{file_name} ---\n{raw_code}\n\n"
+
+            return res if "---" in res else ""
+
+        except Exception as exc:
+            console_terminal_interface.print(
+                f"[dim yellow][GitHub Code Search] Exception: {exc}[/dim yellow]"
+            )
         return ""
 
+    # ------------------------------------------------------------------
+    # GITHUB REPOSITORY SEARCH  (tidak butuh autentikasi)
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def search_github_repositories(query: str) -> str:
+        """
+        Cari repository Roblox/Luau di GitHub menggunakan Repositories Search API.
+        Tidak membutuhkan autentikasi, cocok sebagai fallback.
+        Hasilkan README + deskripsi sebagai konteks untuk AI.
+        """
+        github_token = _get_github_token()
+        try:
+            encoded_query = query.replace(" ", "+")
+            url = (
+                f"https://api.github.com/search/repositories"
+                f"?q={encoded_query}+roblox+language:lua&per_page=3&sort=stars"
+            )
+
+            headers_list = [
+                "-H", "Accept: application/vnd.github.v3+json",
+                "-H", "User-Agent: NexusAgent/2.0",
+            ]
+            if github_token:
+                headers_list += ["-H", f"Authorization: Bearer {github_token}"]
+
+            command = ["curl", "-s", "--max-time", "15"] + headers_list + [url]
+
+            loop = asyncio.get_event_loop()
+            proses = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
+            )
+
+            if proses.returncode != 0 or not proses.stdout:
+                return ""
+
+            data = json.loads(proses.stdout)
+            repos = data.get("items", [])[:3]
+            if not repos:
+                return ""
+
+            res = "GITHUB ROBLOX REPOSITORIES (Stars & Description):\n"
+            for repo in repos:
+                full_name = repo.get("full_name", "")
+                description = repo.get("description", "")[:200]
+                stars = repo.get("stargazers_count", 0)
+                html_url = repo.get("html_url", "")
+
+                # Coba fetch README untuk konteks lebih kaya
+                readme_url = f"https://api.github.com/repos/{full_name}/readme"
+                readme_cmd = ["curl", "-s", "--max-time", "10"] + headers_list + [readme_url]
+
+                readme_proses = await loop.run_in_executor(
+                    None,
+                    lambda cmd=readme_cmd: subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=12
+                    ),
+                )
+
+                readme_text = ""
+                if readme_proses.returncode == 0 and readme_proses.stdout:
+                    try:
+                        readme_data = json.loads(readme_proses.stdout)
+                        import base64
+                        content_b64 = readme_data.get("content", "")
+                        if content_b64:
+                            readme_text = base64.b64decode(
+                                content_b64.replace("\n", "")
+                            ).decode("utf-8", errors="ignore")[:1500]
+                    except Exception:
+                        pass
+
+                res += (
+                    f"--- REPO: {full_name} ({stars}⭐) ---\n"
+                    f"URL: {html_url}\n"
+                    f"DESC: {description}\n"
+                )
+                if readme_text:
+                    res += f"README:\n{readme_text}\n"
+                res += "\n"
+
+            return res
+
+        except Exception as exc:
+            console_terminal_interface.print(
+                f"[dim yellow][GitHub Repo Search] Exception: {exc}[/dim yellow]"
+            )
+        return ""
+
+    # ------------------------------------------------------------------
+    # GITHUB TOPICS SEARCH  (mencari repo berdasarkan topik)
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def search_github_topics(topic: str) -> str:
+        """
+        Cari repository berdasarkan GitHub Topic (misal: roblox, luau, rojo).
+        Berguna untuk menemukan library/framework populer.
+        """
+        github_token = _get_github_token()
+        try:
+            encoded_topic = topic.replace(" ", "-").lower()
+            url = (
+                f"https://api.github.com/search/repositories"
+                f"?q=topic:{encoded_topic}+language:lua&per_page=3&sort=stars"
+            )
+
+            headers_list = [
+                "-H", "Accept: application/vnd.github.v3+json",
+                "-H", "User-Agent: NexusAgent/2.0",
+            ]
+            if github_token:
+                headers_list += ["-H", f"Authorization: Bearer {github_token}"]
+
+            command = ["curl", "-s", "--max-time", "15"] + headers_list + [url]
+
+            loop = asyncio.get_event_loop()
+            proses = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
+            )
+
+            if proses.returncode != 0 or not proses.stdout:
+                return ""
+
+            data = json.loads(proses.stdout)
+            repos = data.get("items", [])[:3]
+            if not repos:
+                return ""
+
+            res = f"GITHUB TOPIC [{topic.upper()}] TOP REPOSITORIES:\n"
+            for repo in repos:
+                full_name = repo.get("full_name", "")
+                description = repo.get("description", "")[:200]
+                stars = repo.get("stargazers_count", 0)
+                res += f"  ⭐ {stars:>5} | {full_name}: {description}\n"
+
+            return res + "\n"
+
+        except Exception as exc:
+            console_terminal_interface.print(
+                f"[dim yellow][GitHub Topics] Exception: {exc}[/dim yellow]"
+            )
+        return ""
+
+    # ------------------------------------------------------------------
+    # DEVFORUM SEARCH
+    # ------------------------------------------------------------------
     @staticmethod
     async def search_devforum(query: str) -> str:
         try:
             encoded_query = query.replace(" ", "+")
             url = f"https://devforum.roblox.com/search/query.json?q={encoded_query}"
-            
+
             command = [
                 "curl", "-s", "--max-time", "15",
-                "-H", "User-Agent: NexusAgent/1.0",
-                url
+                "-H", "User-Agent: NexusAgent/2.0",
+                url,
             ]
             loop = asyncio.get_event_loop()
-            proses = await loop.run_in_executor(None, lambda: subprocess.run(command, capture_output=True, text=True, timeout=20))
+            proses = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
+            )
             if proses.returncode == 0 and proses.stdout:
                 data = json.loads(proses.stdout)
                 posts = data.get("posts", [])[:2]
@@ -161,14 +378,19 @@ class LuauKnowledgeScraper:
                             raw_post_url = f"https://devforum.roblox.com/posts/{post_id}.json"
                             raw_cmd = [
                                 "curl", "-s", "--max-time", "10",
-                                "-H", "User-Agent: NexusAgent/1.0",
-                                raw_post_url
+                                "-H", "User-Agent: NexusAgent/2.0",
+                                raw_post_url,
                             ]
-                            raw_proses = await loop.run_in_executor(None, lambda: subprocess.run(raw_cmd, capture_output=True, text=True, timeout=15))
+                            raw_proses = await loop.run_in_executor(
+                                None,
+                                lambda cmd=raw_cmd: subprocess.run(
+                                    cmd, capture_output=True, text=True, timeout=15
+                                ),
+                            )
                             if raw_proses.returncode == 0 and raw_proses.stdout:
                                 try:
                                     post_data = json.loads(raw_proses.stdout)
-                                    raw_text = post_data.get("raw", "")[:2000] 
+                                    raw_text = post_data.get("raw", "")[:2000]
                                     res += f"--- DEVFORUM RAW POST ---\n{raw_text}\n\n"
                                 except Exception:
                                     pass
@@ -177,6 +399,9 @@ class LuauKnowledgeScraper:
             pass
         return ""
 
+    # ------------------------------------------------------------------
+    # REDDIT SEARCH
+    # ------------------------------------------------------------------
     @staticmethod
     async def search_reddit_robloxdev(query: str) -> str:
         try:
@@ -184,11 +409,14 @@ class LuauKnowledgeScraper:
             url = f"https://www.reddit.com/r/robloxdev/search.json?q={encoded_query}&restrict_sr=1&limit=3"
             command = [
                 "curl", "-s", "--max-time", "15",
-                "-H", "User-Agent: NexusAgent/1.0",
-                url
+                "-H", "User-Agent: NexusAgent/2.0",
+                url,
             ]
             loop = asyncio.get_event_loop()
-            proses = await loop.run_in_executor(None, lambda: subprocess.run(command, capture_output=True, text=True, timeout=20))
+            proses = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
+            )
             if proses.returncode == 0 and proses.stdout:
                 data = json.loads(proses.stdout)
                 posts = data.get("data", {}).get("children", [])[:3]
@@ -196,8 +424,8 @@ class LuauKnowledgeScraper:
                     res = "REDDIT r/robloxdev DISCUSSIONS:\n"
                     for p in posts:
                         post_data = p.get("data", {})
-                        title = post_data.get('title', '')
-                        body_text = post_data.get('selftext', '')[:600]
+                        title = post_data.get("title", "")
+                        body_text = post_data.get("selftext", "")[:600]
                         res += f"--- DISCUSSION: {title} ---\n{body_text}...\n\n"
                     return res
         except Exception:
@@ -253,9 +481,9 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                 f.write(full_payload)
 
             model_candidates = [
-                "models/gemma-4-31b-it",                  
-                "models/gemma-4-26b-a4b-it",              
-                "models/gemini-3.1-flash-lite-preview",   
+                "models/gemma-4-31b-it",
+                "models/gemma-4-26b-a4b-it",
+                "models/gemini-3.1-flash-lite-preview",
                 "models/gemini-2.0-flash",
             ]
 
@@ -284,7 +512,7 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                     try:
                         stdout_data, stderr_data = await asyncio.wait_for(
                             process.communicate(input=prompt_content.encode("utf-8")),
-                            timeout=1800.0, 
+                            timeout=1800.0,
                         )
                     except asyncio.TimeoutError:
                         try:
@@ -312,7 +540,10 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                         f.write(raw_output)
 
                     json_str = ""
-                    markdown_match = re.search(f'{MARKDOWN_BLOCK}(?:json)?\n(.*?)\n{MARKDOWN_BLOCK}', raw_output, re.DOTALL | re.IGNORECASE)
+                    markdown_match = re.search(
+                        f'{MARKDOWN_BLOCK}(?:json)?\n(.*?)\n{MARKDOWN_BLOCK}',
+                        raw_output, re.DOTALL | re.IGNORECASE,
+                    )
                     if markdown_match:
                         json_str = markdown_match.group(1).strip()
                     else:
@@ -337,7 +568,7 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                     continue
 
                 except FileNotFoundError:
-                    return False, f"GEMINI_CLI_NOT_FOUND: CLI tidak ditemukan."
+                    return False, "GEMINI_CLI_NOT_FOUND: CLI tidak ditemukan."
                 except Exception as e:
                     last_error = f"SYSTEM_EXCEPTION ({model_name}): {str(e)}"
                     continue
@@ -360,16 +591,24 @@ class AutoHealerAgent:
             "Terapkan pengujian tingkat militer sehingga kode perbaikan Anda 99% tidak mungkin eror.\n"
             "KEISTIMEWAAN MCP: Jika Anda kebingungan atas logika error, Anda memiliki akses MCP. Anda BISA memanggil Tool JSON untuk 'start_playtest', membaca log, dan berinteraksi dengan Studio."
         )
-        self.heal_history = {} 
+        self.heal_history: dict = {}
+        self._project_context_cache: str = ""
+        self._github_hitbox_context: str = ""
 
     def _analyze_error_type(self, error_msg: str) -> str:
         error_lower = error_msg.lower()
-        if "but got" in error_lower or "expected" in error_lower: return "TYPE_MISMATCH"
-        elif "unknown" in error_lower and ("global" in error_lower or "type" in error_lower): return "UNDEFINED_REFERENCE"
-        elif "syntax" in error_lower or "unexpected symbol" in error_lower: return "SYNTAX_ERROR"
-        elif "cannot assign" in error_lower or "function only returns" in error_lower: return "ASSIGNMENT_ERROR"
-        elif "unknown property" in error_lower or "not found" in error_lower: return "PROPERTY_ERROR"
-        else: return "GENERIC_ERROR"
+        if "but got" in error_lower or "expected" in error_lower:
+            return "TYPE_MISMATCH"
+        elif "unknown" in error_lower and ("global" in error_lower or "type" in error_lower):
+            return "UNDEFINED_REFERENCE"
+        elif "syntax" in error_lower or "unexpected symbol" in error_lower:
+            return "SYNTAX_ERROR"
+        elif "cannot assign" in error_lower or "function only returns" in error_lower:
+            return "ASSIGNMENT_ERROR"
+        elif "unknown property" in error_lower or "not found" in error_lower:
+            return "PROPERTY_ERROR"
+        else:
+            return "GENERIC_ERROR"
 
     def _generate_fix_guidance(self, error_msg: str, error_type: str) -> str:
         base_searching = (
@@ -388,28 +627,30 @@ class AutoHealerAgent:
         return guidance.get(error_type, guidance["GENERIC_ERROR"])
 
     async def heal_code(
-        self, 
-        broken_code: str, 
-        compiler_error: str, 
-        module_name: str, 
+        self,
+        broken_code: str,
+        compiler_error: str,
+        module_name: str,
         agent: dict,
         task_description: str = "",
         ecosystem_context: str = "",
         previous_error: str = "",
-        target_filepath: str = ""
+        target_filepath: str = "",
     ) -> str:
         last_error_line = compiler_error.splitlines()[-1] if compiler_error else "Unknown"
         error_type = self._analyze_error_type(compiler_error)
-        
+
         if module_name not in self.heal_history:
             self.heal_history[module_name] = []
         self.heal_history[module_name].append(error_type)
-        
-        console_terminal_interface.print(f"[bold magenta]   [Auto-Healer] Membedah {module_name} ({error_type}): {last_error_line}[/bold magenta]")
-        
+
+        console_terminal_interface.print(
+            f"[bold magenta]   [Auto-Healer] Membedah {module_name} ({error_type}): {last_error_line}[/bold magenta]"
+        )
+
         safe_broken_code = extract_pure_luau_code(broken_code)
         fix_guidance = self._generate_fix_guidance(compiler_error, error_type)
-        
+
         base_prompt = (
             f"[ERROR CLASSIFICATION]: {error_type}\n"
             f"[ERROR MESSAGE COMPILER LUNE/ROJO]:\n{compiler_error}\n\n"
@@ -417,23 +658,26 @@ class AutoHealerAgent:
         )
         if ecosystem_context:
             base_prompt += f"[MODUL ECOSYSTEM REFERENCE UNTUK IMPORT/REQUIRE]:\n{ecosystem_context}\n\n"
-        
+
         console_terminal_interface.print(f"[dim cyan]   🔍 Menjalankan RAG Pipeline...[/dim cyan]")
         clean_error_q = LuauKnowledgeScraper._clean_error_query(compiler_error)
         clean_task_name = LuauKnowledgeScraper._clean_task_query(module_name)
         combined_query = f"{clean_task_name} {clean_error_q}"[:80]
-        
+
         github_context = await LuauKnowledgeScraper.search_github_luau(combined_query)
         devforum_context = await LuauKnowledgeScraper.search_devforum(combined_query)
         reddit_context = await LuauKnowledgeScraper.search_reddit_robloxdev(combined_query)
-        
+
         if github_context or devforum_context or reddit_context:
             base_prompt += "[KNOWLEDGE BASE (HASIL SCRAPING GITHUB RAW, DEVFORUM & REDDIT)]\n"
-            if github_context: base_prompt += github_context + "\n"
-            if devforum_context: base_prompt += devforum_context + "\n"
-            if reddit_context: base_prompt += reddit_context + "\n"
+            if github_context:
+                base_prompt += github_context + "\n"
+            if devforum_context:
+                base_prompt += devforum_context + "\n"
+            if reddit_context:
+                base_prompt += reddit_context + "\n"
             base_prompt += "DOKTRIN ADAPTASI: 1. Filter Standalone. 2. Musnahkan ID Aset. 3. Jangan salin bulat-bulat, adaptasikan!\n\n"
-        
+
         base_prompt += (
             f"[KODE YANG RUSAK]:\n{MARKDOWN_BLOCK}lua\n{safe_broken_code}\n{MARKDOWN_BLOCK}\n\n"
             f"[INSTRUKSI BEDAH MUTLAK]:\n"
@@ -449,8 +693,10 @@ class AutoHealerAgent:
 
         for turn in range(max_mcp_turns):
             if ROBLOX_MCP_URL:
-                console_terminal_interface.print(f"[dim yellow]   [Iterative Debugging] Turn {turn+1}/{max_mcp_turns}...[/dim yellow]")
-            
+                console_terminal_interface.print(
+                    f"[dim yellow]   [Iterative Debugging] Turn {turn+1}/{max_mcp_turns}...[/dim yellow]"
+                )
+
             dynamic_prompt = base_prompt
             if mcp_history_log:
                 dynamic_prompt += f"\n\n[RIWAYAT MCP TOOL EXECUTION (STUDIO LIVE)]:\n{mcp_history_log}\nPelajari log ini sebelum bertindak!"
@@ -466,19 +712,55 @@ class AutoHealerAgent:
                     tool_data = json.loads(result_data)["mcp_tool_call"]
                     tool_name = tool_data.get("tool_name", "unknown")
                     tool_args = tool_data.get("args", {})
-                    
-                    console_terminal_interface.print(f"[bold cyan]   🛠️ [MCP Action] AI Menjalankan Studio Tool: {tool_name}[/bold cyan]")
-                    
+
+                    console_terminal_interface.print(
+                        f"[bold cyan]   🛠️ [MCP Action] AI Menjalankan Studio Tool: {tool_name}[/bold cyan]"
+                    )
+
                     tool_response = await RobloxMCPBridge.execute_tool(tool_name, tool_args)
-                    mcp_history_log += f"\n--- CALL: {tool_name} ---\nARGS: {json.dumps(tool_args)}\nRESULT: {tool_response[:1000]}\n"
-                    continue 
+                    mcp_history_log += (
+                        f"\n--- CALL: {tool_name} ---\n"
+                        f"ARGS: {json.dumps(tool_args)}\n"
+                        f"RESULT: {tool_response[:1000]}\n"
+                    )
+                    continue
                 except Exception as e:
                     mcp_history_log += f"\n--- CALL FAILED ---\nERROR: {str(e)}\n"
                     continue
             else:
                 return extract_pure_luau_code(result_data)
-        
+
         return broken_code
+
+    async def initialize_and_scan(self) -> None:
+        """
+        Membaca direktori proyek (FantasyExtraction_Roblox_TrueApex) sebelum
+        memulai pekerjaan apapun untuk memahami modul yang sudah/belum dibangun.
+        Dipanggil saat pertama kali sistem dijalankan dan sebelum publish ke Roblox Creator API.
+        """
+        console_terminal_interface.print(
+            "[bold cyan][Healer Init] Memindai konteks proyek & referensi GitHub sebelum bekerja...[/bold cyan]"
+        )
+        try:
+            _github_hitbox = await search_github_for_hitbox_armor()
+            _project_ctx = await scan_existing_project()
+            self._project_context_cache = _project_ctx
+            self._github_hitbox_context = _github_hitbox
+            console_terminal_interface.print(
+                "[bold green][Healer Init] ✅ Scan proyek selesai. AI siap dengan konteks penuh.[/bold green]"
+            )
+            # Periksa & hapus file Lua lama yang isinya salah/tidak lengkap
+            _repair_report = await scan_and_repair_invalid_files()
+            if _repair_report:
+                console_terminal_interface.print(
+                    f"[bold yellow][Healer Init] Laporan perapian file:\n{_repair_report}[/bold yellow]"
+                )
+        except Exception as _e:
+            console_terminal_interface.print(
+                f"[bold yellow][Healer Init] Scan dilewati (non-fatal): {_e}[/bold yellow]"
+            )
+            self._project_context_cache = ""
+            self._github_hitbox_context = ""
 
 
 class OmniSynthesizerAgent:
@@ -548,6 +830,24 @@ class OmniSynthesizerAgent:
             comprehensive_prompt += f"[REFERENSI MODUL GLOBAL UNTUK REQUIRE()]:\n{ecosystem_context}\n\n"
         comprehensive_prompt += f"[INSTRUKSI TUGAS KHUSUS ({module_name})]:\n{task_description}\n\n"
 
+        # Injeksi wajib HitboxSeparation untuk modul yang membutuhkannya
+        _needs_hitbox = (
+            any(_kw in module_name.upper() for _kw in ["ARMOR", "HELMET", "WEAPON", "FURNITURE", "BIOME", "TREE", "ROCK", "BUILDING"])
+            or "HitboxSeparation" in req_keys
+        )
+        if _needs_hitbox:
+            _hitbox_template = get_armor_hitbox_mandatory_template()
+            comprehensive_prompt += _hitbox_template
+            try:
+                _github_ref = await search_github_for_hitbox_armor()
+                if _github_ref:
+                    comprehensive_prompt += _github_ref
+            except Exception:
+                pass
+            console_terminal_interface.print(
+                f"[bold magenta]  [HITBOX INJECT] Template HitboxSeparation + GitHub disuntikkan untuk: {module_name}[/bold magenta]"
+            )
+
         if previous_error and previous_code:
             safe_code = extract_pure_luau_code(previous_code)
             comprehensive_prompt += (
@@ -559,22 +859,32 @@ class OmniSynthesizerAgent:
         console_terminal_interface.print(
             f"[bold cyan]  [{agent['name']}] Memproses {module_name}... (Antri Sequential - Standar Militer)[/bold cyan]"
         )
-        
-        console_terminal_interface.print(f"[dim cyan]  🔍 Menjalankan RAG Pipeline: Membaca Kitab DevForum & Ekstrak Raw GitHub...[/dim cyan]")
+
+        console_terminal_interface.print(
+            f"[dim cyan]  🔍 Menjalankan RAG Pipeline: Membaca Kitab DevForum & Ekstrak Raw GitHub...[/dim cyan]"
+        )
         clean_task_query = LuauKnowledgeScraper._clean_task_query(module_name)
         github_context = await LuauKnowledgeScraper.search_github_luau(clean_task_query)
+
+        # Jika GitHub Code Search gagal, coba Repository Search
+        if not github_context:
+            github_context = await LuauKnowledgeScraper.search_github_repositories(clean_task_query)
+
         devforum_context = await LuauKnowledgeScraper.search_devforum(clean_task_query)
         reddit_context = await LuauKnowledgeScraper.search_reddit_robloxdev(clean_task_query)
-        
+
         if github_context or devforum_context or reddit_context:
             live_rag_data = "[KNOWLEDGE BASE (HASIL SCRAPING GITHUB RAW, DEVFORUM & REDDIT)]\n"
-            if github_context: live_rag_data += github_context + "\n"
-            if devforum_context: live_rag_data += devforum_context + "\n"
-            if reddit_context: live_rag_data += reddit_context + "\n"
+            if github_context:
+                live_rag_data += github_context + "\n"
+            if devforum_context:
+                live_rag_data += devforum_context + "\n"
+            if reddit_context:
+                live_rag_data += reddit_context + "\n"
             live_rag_data += "GUNAKAN TEKS KODE DAN DISKUSI DI ATAS SEBAGAI INSPIRASI/CONTEKAN CARA MENYELESAIKAN TUGAS INI.\n"
             comprehensive_prompt += live_rag_data
             console_terminal_interface.print(f"[dim green]  ✅ DevForum dan Raw GitHub disuntikkan ke prompt.[/dim green]")
-        
+
         success, result_data = await execute_gemini_cli_pure(agent, self.sys_inst, comprehensive_prompt)
 
         if success:
@@ -585,9 +895,11 @@ class OmniSynthesizerAgent:
             if previous_code and previous_error:
                 safe_prev_code = extract_pure_luau_code(previous_code)
                 similarity = difflib.SequenceMatcher(None, safe_prev_code, code_attempt).ratio()
-                
+
                 if similarity < 0.15:
-                    console_terminal_interface.print(f"[bold red]  [SANITY CHECK GAGAL]: Kode baru hanya {similarity*100:.1f}% mirip. File terindikasi kosong/halusinasi. DITOLAK.[/bold red]")
+                    console_terminal_interface.print(
+                        f"[bold red]  [SANITY CHECK GAGAL]: Kode baru hanya {similarity*100:.1f}% mirip. File terindikasi kosong/halusinasi. DITOLAK.[/bold red]"
+                    )
                     return False, f"SANITY_CHECK_FAILED: Kode baru terlalu berbeda ({similarity*100:.1f}% similarity).", previous_code
 
             omni_ok, omni_msg = AbsoluteOmniValidator.execute_validation(code_attempt, req_keys, forb_keys)
@@ -602,13 +914,13 @@ class OmniSynthesizerAgent:
                     code_attempt, ast_msg, module_name, agent,
                     task_description=task_description,
                     ecosystem_context=ecosystem_context,
-                    target_filepath=target_filepath
+                    target_filepath=target_filepath,
                 )
-                
+
                 healed_omni_ok, healed_omni_msg = AbsoluteOmniValidator.execute_validation(healed_code, req_keys, forb_keys)
                 if not healed_omni_ok:
                     return False, healed_omni_msg, healed_code
-                
+
                 healed_ast_ok, healed_ast_msg = await NativeLuauCompiler.execute_native_ast_verification(healed_code, module_name)
                 if not healed_ast_ok:
                     return False, healed_ast_msg, healed_code
@@ -621,7 +933,8 @@ class OmniSynthesizerAgent:
 
             await save_verified_module(module_name, target_filepath, code_attempt)
             console_terminal_interface.print(f"[bold green]  ✅ [{module_name}] SUKSES! Disimpan & Diverifikasi.[/bold green]")
-            # === NEXUS ASSET ENGINE HOOK (TAMBAHAN BARU) ===
+
+            # === NEXUS ASSET ENGINE HOOK ===
             _asset_type = detect_asset_type(module_name)
             if _asset_type != "LUAU":
                 try:
@@ -634,6 +947,7 @@ class OmniSynthesizerAgent:
                 except Exception as _ae:
                     console_terminal_interface.print(f"[dim yellow]  [Asset Engine] Exception (non-fatal): {_ae}[/dim yellow]")
             # === AKHIR ASSET ENGINE HOOK ===
+
             return True, "", code_attempt
 
         else:
