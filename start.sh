@@ -1,5 +1,12 @@
 #!/bin/bash
 
+  # Source Rust (rustup) cargo environment if exists
+  # Diperlukan agar rustc tersedia di PATH setelah auto-install
+  if [ -f "$HOME/.cargo/env" ]; then
+      source "$HOME/.cargo/env"
+  fi
+
+  
 cleanup() {
     trap - SIGINT SIGTERM SIGHUP EXIT
     echo -e "\n[Sistem] Mematikan seluruh proses Nexus..."
