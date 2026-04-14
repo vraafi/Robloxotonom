@@ -1063,24 +1063,42 @@ class TelegramPolyglotListener:
             "-p", "Jawab secara natural dan ringkas. Bukan kode, kecuali diminta.",
         ]
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-            stdout_data, _ = await asyncio.wait_for(
-                process.communicate(input=full_input.encode("utf-8")),
-                timeout=30.0,
-            )
-            result = stdout_data.decode("utf-8", errors="replace").strip()
-            return result if result else "ERROR: Respons kosong."
-        except asyncio.TimeoutError:
-            return "ERROR: Timeout."
-        except Exception as e:
-            return f"ERROR: {e}"
+        FALLBACK_MODEL = "models/gemma-4-31b-it"
+        for attempt, model in enumerate([command[command.index("-m") + 1], FALLBACK_MODEL]):
+            if attempt == 1:
+                # Ganti model ke fallback
+                command = [
+                    GEMINI_CLI_PATH,
+                    "-m", FALLBACK_MODEL,
+                    "-y",
+                    "-p", "Jawab secara natural dan ringkas. Bukan kode, kecuali diminta.",
+                ]
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                stdout_data, stderr_data = await asyncio.wait_for(
+                    process.communicate(input=full_input.encode("utf-8")),
+                    timeout=30.0,
+                )
+                result = stdout_data.decode("utf-8", errors="replace").strip()
+                if result and not result.lower().startswith("error") and len(result) > 3:
+                    return result
+                # stdout kosong/error — coba fallback di iterasi berikut
+                continue
+            except asyncio.TimeoutError:
+                if attempt == 1:
+                    return "ERROR: Timeout."
+                continue
+            except Exception as e:
+                if attempt == 1:
+                    return f"ERROR: {e}"
+                continue
+        return "ERROR: Semua model gagal."
 
     def _classify_intent_local(self, text: str) -> str:
         """
@@ -1152,6 +1170,9 @@ class TelegramPolyglotListener:
             t_clean = t_clean.replace('x', '*').replace('×', '*').replace('÷', '/')
             t_clean = t_clean.replace('^', '**')
             t_clean = _re.sub(r'[^\d\s\.\+\-\*\/\(\)\%\*]', '', t_clean).strip()
+            # Hapus leading zero (02837 → 2837) — Python 3 tidak izinkan 0-prefixed integer
+            # Kecuali 0.5, 0.25 (desimal) tetap aman
+            t_clean = _re.sub(r'(?<![\d\.])0+(\d)', r'\1', t_clean)
             try:
                 result = eval(t_clean, {"__builtins__": {}, "sqrt": _math.sqrt,
                                         "pi": _math.pi, "pow": pow, "abs": abs})
