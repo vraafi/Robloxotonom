@@ -199,6 +199,272 @@ Tugas Anda adalah memperbaiki file tersebut menggunakan `aider` format.
             _cleanup_aider_artifacts(working_dir)
             return original_code
 
+
+# ============================================================
+# PRE-DEPLOYMENT VALIDATOR
+# Memeriksa SEMUA file yang diharapkan sebelum upload ke Roblox.
+# Jika ada yang hilang atau kosong → regenerasi otomatis dulu.
+# Deployment HANYA jalan jika 100% file sudah ada dan valid.
+# ============================================================
+
+import aiofiles
+
+class PreDeploymentValidator:
+    """
+    Penjaga gerbang terakhir sebelum upload ke Roblox Creator API.
+    Tidak ada satu file pun yang boleh hilang atau kosong.
+    """
+
+    # File di bawah ukuran ini dianggap gagal/kosong
+    MIN_FILE_SIZE_BYTES: int = 100
+
+    def __init__(self):
+        from nexus_config import SOURCE_CODE_DIRECTORY, ACTIVE_AGENTS
+        self.src_dir = SOURCE_CODE_DIRECTORY
+        self.active_agents = ACTIVE_AGENTS
+
+    # ----------------------------------------------------------
+    # SCAN DISK: File apa saja yang benar-benar ada di disk?
+    # ----------------------------------------------------------
+    def scan_disk_files(self) -> dict:
+        """Kembalikan dict {full_path: size_bytes} untuk semua .lua file di src/"""
+        found = {}
+        if not os.path.exists(self.src_dir):
+            return found
+        for root, dirs, files in os.walk(self.src_dir):
+            for fname in files:
+                if fname.endswith(".lua") or fname.endswith(".luau"):
+                    full_path = os.path.join(root, fname)
+                    try:
+                        found[full_path] = os.path.getsize(full_path)
+                    except OSError:
+                        found[full_path] = 0
+        return found
+
+    # ----------------------------------------------------------
+    # ANALISIS: Task mana yang hilang / terlalu kecil?
+    # ----------------------------------------------------------
+    def find_incomplete_tasks(self, task_queue: list) -> dict:
+        """
+        Cross-reference task_queue dengan file di disk.
+        Kembalikan dict dengan 3 kategori:
+          - missing  : file tidak ada sama sekali
+          - empty    : file ada tapi < MIN_FILE_SIZE_BYTES
+          - ok       : file ada dan ukurannya cukup
+        """
+        disk_files = self.scan_disk_files()
+        result = {"missing": [], "empty": [], "ok": []}
+
+        for task in task_queue:
+            path = task.get("path", "")
+            if not path:
+                continue
+            if path not in disk_files and not os.path.exists(path):
+                result["missing"].append(task)
+            elif disk_files.get(path, 0) < self.MIN_FILE_SIZE_BYTES or \
+                 os.path.getsize(path) < self.MIN_FILE_SIZE_BYTES:
+                result["empty"].append(task)
+            else:
+                result["ok"].append(task)
+
+        return result
+
+    # ----------------------------------------------------------
+    # CETAK LAPORAN: Tampilkan status ke terminal
+    # ----------------------------------------------------------
+    def print_report(self, analysis: dict):
+        total = len(analysis["missing"]) + len(analysis["empty"]) + len(analysis["ok"])
+        ok_count = len(analysis["ok"])
+        miss_count = len(analysis["missing"])
+        empty_count = len(analysis["empty"])
+
+        console_terminal_interface.print(
+            f"\n[bold cyan]╔══════════════════════════════════════════════════╗[/bold cyan]"
+        )
+        console_terminal_interface.print(
+            f"[bold cyan]║     PRE-DEPLOYMENT FILE COMPLETENESS REPORT     ║[/bold cyan]"
+        )
+        console_terminal_interface.print(
+            f"[bold cyan]╠══════════════════════════════════════════════════╣[/bold cyan]"
+        )
+        console_terminal_interface.print(
+            f"[bold cyan]║  Total Task  : {str(total).ljust(33)}║[/bold cyan]"
+        )
+        console_terminal_interface.print(
+            f"[bold green]║  ✅ Siap     : {str(ok_count).ljust(33)}║[/bold green]"
+        )
+        console_terminal_interface.print(
+            f"[bold red]║  ❌ Hilang   : {str(miss_count).ljust(33)}║[/bold red]"
+        )
+        console_terminal_interface.print(
+            f"[bold yellow]║  ⚠️  Kosong   : {str(empty_count).ljust(33)}║[/bold yellow]"
+        )
+        console_terminal_interface.print(
+            f"[bold cyan]╚══════════════════════════════════════════════════╝[/bold cyan]\n"
+        )
+
+        if analysis["missing"]:
+            console_terminal_interface.print("[bold red]File yang HILANG:[/bold red]")
+            for t in analysis["missing"]:
+                console_terminal_interface.print(f"  ❌ {t['name']} → {t['path']}")
+
+        if analysis["empty"]:
+            console_terminal_interface.print("[bold yellow]File yang KOSONG/TERLALU KECIL:[/bold yellow]")
+            for t in analysis["empty"]:
+                size = os.path.getsize(t["path"]) if os.path.exists(t["path"]) else 0
+                console_terminal_interface.print(f"  ⚠️  {t['name']} → {size} bytes (min {self.MIN_FILE_SIZE_BYTES})")
+
+    # ----------------------------------------------------------
+    # REGENERASI: Buat ulang file yang hilang/kosong pakai AI
+    # Infinity retry seperti sistem utama — tidak berhenti sampai berhasil
+    # ----------------------------------------------------------
+    async def regenerate_missing(
+        self, incomplete_tasks: list, synthesizer, agent: dict
+    ):
+        total = len(incomplete_tasks)
+        console_terminal_interface.print(
+            f"\n[bold yellow]🔧 [PRE-DEPLOY] Memulai regenerasi {total} file yang hilang/kosong...[/bold yellow]"
+        )
+
+        for idx, task in enumerate(incomplete_tasks, 1):
+            console_terminal_interface.print(
+                f"\n[bold magenta]  [{idx}/{total}] Regenerasi: {task['name']}[/bold magenta]"
+            )
+
+            attempt = 0
+            prev_err = ""
+            prev_code = ""
+
+            # ── INFINITY RETRY sampai berhasil ──────────────────
+            while True:
+                attempt += 1
+                try:
+                    completed, prev_err, prev_code = await synthesizer.synthesize_handoff(
+                        agent,
+                        task["path"],
+                        task["name"],
+                        task["desc"],
+                        task["req"],
+                        task["forb"],
+                        prev_err,
+                        prev_code,
+                    )
+
+                    # Pastikan file benar-benar tertulis dan ukurannya cukup
+                    if (
+                        completed
+                        and os.path.exists(task["path"])
+                        and os.path.getsize(task["path"]) >= self.MIN_FILE_SIZE_BYTES
+                    ):
+                        file_size = os.path.getsize(task["path"])
+                        console_terminal_interface.print(
+                            f"  [bold green]✅ {task['name']} berhasil! ({file_size} bytes, percobaan ke-{attempt})[/bold green]"
+                        )
+                        break
+                    else:
+                        console_terminal_interface.print(
+                            f"  [bold yellow]  Percobaan {attempt} gagal, retry dalam 10 detik...[/bold yellow]"
+                        )
+                        await asyncio.sleep(10)
+
+                except Exception as exc:
+                    console_terminal_interface.print(
+                        f"  [bold red]  Exception percobaan {attempt}: {exc}. Retry dalam 15 detik...[/bold red]"
+                    )
+                    await asyncio.sleep(15)
+
+    # ----------------------------------------------------------
+    # VALIDASI AKHIR: Pipeline lengkap sebelum deployment
+    # Kembalikan True = aman deploy, False = batalkan deploy
+    # ----------------------------------------------------------
+    async def validate_and_complete(
+        self, task_queue: list, synthesizer, agent: dict, notify_fn=None
+    ) -> bool:
+        """
+        Gerbang akhir keamanan deployment.
+        1. Scan semua task yang diharapkan vs file di disk
+        2. Cetak laporan detail
+        3. Regenerasi file yang hilang/kosong (infinity retry)
+        4. Verifikasi ulang setelah regenerasi
+        5. Return True hanya jika 100% file siap
+        """
+        console_terminal_interface.print(
+            "\n[bold yellow]🛡️  [PRE-DEPLOY VALIDATOR] Mulai pemeriksaan kelengkapan sebelum upload ke Roblox...[/bold yellow]"
+        )
+
+        # === TAHAP 1: ANALISIS AWAL ===
+        analysis = self.find_incomplete_tasks(task_queue)
+        self.print_report(analysis)
+
+        total_incomplete = len(analysis["missing"]) + len(analysis["empty"])
+
+        if total_incomplete == 0:
+            msg = (
+                f"✅ [PRE-DEPLOY] Semua {len(analysis['ok'])} file lengkap dan valid.\n"
+                f"🚀 Deployment ke Roblox aman untuk dilanjutkan!"
+            )
+            console_terminal_interface.print(f"[bold green]{msg}[/bold green]")
+            if notify_fn:
+                try:
+                    await notify_fn(msg, important=True)
+                except Exception:
+                    pass
+            return True
+
+        # === TAHAP 2: NOTIF TELEGRAM SEBELUM REGENERASI ===
+        warn_msg = (
+            f"⚠️ [PRE-DEPLOY] Ditemukan {total_incomplete} file hilang/kosong sebelum deployment.\n"
+            f"❌ Hilang: {len(analysis['missing'])} | ⚠️ Kosong: {len(analysis['empty'])}\n"
+            f"🔧 Memulai regenerasi otomatis... Deployment ditunda sementara."
+        )
+        console_terminal_interface.print(f"[bold yellow]{warn_msg}[/bold yellow]")
+        if notify_fn:
+            try:
+                await notify_fn(warn_msg, important=True)
+            except Exception:
+                pass
+
+        # === TAHAP 3: REGENERASI FILE HILANG/KOSONG ===
+        all_incomplete = analysis["missing"] + analysis["empty"]
+        await self.regenerate_missing(all_incomplete, synthesizer, agent)
+
+        # === TAHAP 4: VERIFIKASI ULANG SETELAH REGENERASI ===
+        console_terminal_interface.print(
+            "\n[bold cyan]🔍 [PRE-DEPLOY] Verifikasi ulang setelah regenerasi...[/bold cyan]"
+        )
+        final_analysis = self.find_incomplete_tasks(task_queue)
+        self.print_report(final_analysis)
+
+        final_incomplete = len(final_analysis["missing"]) + len(final_analysis["empty"])
+
+        if final_incomplete == 0:
+            success_msg = (
+                f"✅ [PRE-DEPLOY] Semua file berhasil dilengkapi!\n"
+                f"📦 Total {len(final_analysis['ok'])} file siap.\n"
+                f"🚀 Deployment ke Roblox Creator API aman dilanjutkan!"
+            )
+            console_terminal_interface.print(f"[bold green]{success_msg}[/bold green]")
+            if notify_fn:
+                try:
+                    await notify_fn(success_msg, important=True)
+                except Exception:
+                    pass
+            return True
+        else:
+            fail_msg = (
+                f"❌ [PRE-DEPLOY] DEPLOYMENT DIBATALKAN!\n"
+                f"Masih ada {final_incomplete} file yang tidak dapat di-generate.\n"
+                f"Periksa log untuk detail error."
+            )
+            console_terminal_interface.print(f"[bold red]{fail_msg}[/bold red]")
+            if notify_fn:
+                try:
+                    await notify_fn(fail_msg, important=True)
+                except Exception:
+                    pass
+            return False
+
+
 if __name__ == "__main__":
     print("Nexus Healer Watchdog: Aktif.")
     while True:
