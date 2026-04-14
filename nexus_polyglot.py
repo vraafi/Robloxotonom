@@ -1,26 +1,26 @@
 """
-nexus_polyglot.py
-=================
+nexus_polyglot.py  (v3 — Autonomous Installer + Persistent Sandbox + No-Timeout Retry)
+========================================================================================
 Modul Telegram Polyglot Command Listener & Zero-Error Execution Pipeline.
 
-Fitur:
-  - /polyglot [lang] [desc]  -- Sintesis & eksekusi kode dalam bahasa apapun
-                                (Python, C++, Rust, Go, Java, JS, Bash, Lua, dll)
-  - /status                  -- Cek status sistem Nexus secara real-time
-  - /help                    -- Panduan perintah lengkap
-  - Pipeline Zero-Error:
-      Tahap 1: SotA 2026 RAG (GitHub Knowledge Scraping)
-      Tahap 2: Sintesis kode via Gemini CLI
-      Tahap 3: Sandboxed Execution (subprocess terisolasi, timeout anti-hang)
-      Tahap 4: Auto-Heal Loop (hingga 5 percobaan perbaikan otomatis)
-  - Clarification Protocol: Bot bertanya balik jika perintah tidak jelas
-  - Non-blocking: Berjalan sebagai asyncio background task, tidak mengganggu
-    pipeline pembuatan game Roblox yang sedang berjalan.
+FITUR BARU v3:
+  - AUTO-INSTALL: Jika compiler/binary tidak ditemukan, sistem otomatis menginstall
+    tanpa perlu bertanya ke pengguna (apt, pip3, cargo, npm, rustup).
+  - PERSISTENT SANDBOX: Setiap task punya direktori sandbox sendiri yang TIDAK dihapus
+    otomatis. Sandbox hanya dihapus ketika:
+      - Pengguna mengirim /clearcache
+      - Sistem benar-benar selesai total
+  - NO-TIMEOUT RETRY: Setelah 5x Auto-Heal gagal, bot meminta instruksi tambahan
+    dari pengguna TANPA timeout — menunggu selamanya sampai pengguna balas.
+  - SANDBOX BARU: Dibuat fresh setiap kali pengguna membuat request /polyglot baru.
 
-Dipanggil dari nexus_main.py:
-    asyncio.create_task(start_telegram_polling())
+Perintah Telegram:
+  /polyglot [lang] [desc]  — Sintesis & eksekusi kode (multi-bahasa)
+  /status                  — Status sistem real-time
+  /clearcache              — Hapus semua sandbox & cache (sandbox baru akan dibuat)
+  /help                    — Panduan lengkap
 
-Arsitektur: Aktif | Otonom | Terisolasi | Anti-Hang
+Arsitektur: Aktif | Otonom | Terisolasi | Anti-Hang | Self-Installing
 """
 
 import asyncio
@@ -31,7 +31,7 @@ import tempfile
 import subprocess
 import requests
 import uuid
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 from nexus_config import (
     console_terminal_interface,
@@ -45,15 +45,24 @@ from nexus_healer import ApexKeyRotator
 
 # ============================================================
 # SEMAPHORE EKSKLUSIF UNTUK POLYGLOT (Jalur Tol Khusus)
-# Menjamin 2 slot terpisah untuk perintah Telegram -- tidak
-# mengantre di belakang tugas Roblox yang sedang berjalan lama.
+# 2 slot terpisah — tidak mengantre di belakang tugas Roblox.
 # ============================================================
 POLYGLOT_CLI_SEMAPHORE = asyncio.Semaphore(2)
 
 _key_rotator_polyglot: Optional[ApexKeyRotator] = None
 
 # ============================================================
-# KONFIGURASI BAHASA YANG DIDUKUNG
+# PERSISTENT SANDBOX STATE
+# Sandbox TIDAK dihapus otomatis. Hanya dihapus saat /clearcache.
+# ============================================================
+_active_sandboxes: Dict[str, str] = {}   # task_id -> tmpdir path
+_installed_compilers: set = set()        # bahasa yang sudah auto-installed
+_sandbox_lock = asyncio.Lock()
+
+POLYGLOT_SANDBOX_ROOT = os.path.join(TEMP_IO_DIRECTORY, "polyglot_sandboxes")
+
+# ============================================================
+# KONFIGURASI BAHASA & AUTO-INSTALL
 # ============================================================
 LANGUAGE_CONFIG = {
     "python": {
@@ -61,86 +70,110 @@ LANGUAGE_CONFIG = {
         "compile_cmd": None,
         "run_cmd": ["python3", "{file}"],
         "aliases": ["py", "python3", "python2"],
+        "check_bin": "python3",
+        "auto_install": None,  # sudah pasti ada di Ubuntu
     },
     "cpp": {
         "ext": ".cpp",
         "compile_cmd": ["g++", "-std=c++17", "-O2", "-o", "{binary}", "{file}"],
         "run_cmd": ["{binary}"],
         "aliases": ["c++", "cpp17", "cplusplus"],
+        "check_bin": "g++",
+        "auto_install": "sudo apt-get install -y build-essential g++",
     },
     "c": {
         "ext": ".c",
         "compile_cmd": ["gcc", "-std=c11", "-O2", "-o", "{binary}", "{file}"],
         "run_cmd": ["{binary}"],
         "aliases": [],
+        "check_bin": "gcc",
+        "auto_install": "sudo apt-get install -y build-essential gcc",
     },
     "rust": {
         "ext": ".rs",
         "compile_cmd": ["rustc", "-o", "{binary}", "{file}"],
         "run_cmd": ["{binary}"],
         "aliases": ["rs"],
+        "check_bin": "rustc",
+        "auto_install": (
+            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && "
+            "source $HOME/.cargo/env"
+        ),
     },
     "javascript": {
         "ext": ".js",
         "compile_cmd": None,
         "run_cmd": ["node", "{file}"],
         "aliases": ["js", "node", "nodejs"],
+        "check_bin": "node",
+        "auto_install": "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs",
     },
     "go": {
         "ext": ".go",
         "compile_cmd": None,
         "run_cmd": ["go", "run", "{file}"],
         "aliases": ["golang"],
+        "check_bin": "go",
+        "auto_install": "sudo apt-get install -y golang-go",
     },
     "java": {
         "ext": ".java",
         "compile_cmd": ["javac", "{file}"],
         "run_cmd": ["java", "-cp", "{dir}", "{classname}"],
         "aliases": [],
+        "check_bin": "javac",
+        "auto_install": "sudo apt-get install -y openjdk-21-jdk",
     },
     "typescript": {
         "ext": ".ts",
         "compile_cmd": None,
         "run_cmd": ["npx", "--yes", "ts-node", "{file}"],
         "aliases": ["ts"],
+        "check_bin": "node",
+        "auto_install": "npm install -g typescript ts-node",
     },
     "bash": {
         "ext": ".sh",
         "compile_cmd": None,
         "run_cmd": ["bash", "{file}"],
         "aliases": ["sh", "shell"],
+        "check_bin": "bash",
+        "auto_install": None,  # bash pasti ada
     },
     "lua": {
         "ext": ".lua",
         "compile_cmd": None,
-        "run_cmd": ["lua", "{file}"],
+        "run_cmd": ["lua5.4", "{file}"],
         "aliases": ["lua5", "luau"],
+        "check_bin": "lua5.4",
+        "auto_install": "sudo apt-get install -y lua5.4",
     },
 }
 
 MAX_AUTO_HEAL_ATTEMPTS = 5
-CLARIFICATION_TIMEOUT_SECONDS = 120
 EXECUTION_TIMEOUT_SECONDS = 30
 
 HELP_TEXT = (
-    "<b>NEXUS POLYGLOT BOT -- Panduan Perintah</b>\n\n"
+    "<b>NEXUS POLYGLOT BOT v3 -- Panduan Perintah</b>\n\n"
     "<b>/polyglot [bahasa] [deskripsi]</b>\n"
     "Sintesis &amp; eksekusi kode dalam bahasa apapun.\n\n"
     "Contoh:\n"
     "  <code>/polyglot python buat fungsi fibonacci dengan memoization</code>\n"
-    "  <code>/polyglot cpp implementasi binary search tree insert dan delete</code>\n"
-    "  <code>/polyglot rust buat HTTP client sederhana dengan error handling</code>\n"
+    "  <code>/polyglot cpp implementasi binary search tree</code>\n"
+    "  <code>/polyglot rust HTTP client dengan error handling</code>\n"
     "  <code>/polyglot go concurrent web scraper dengan goroutines</code>\n"
-    "  <code>/polyglot java implementasi quicksort dengan generics</code>\n\n"
-    "<b>Bahasa yang Didukung:</b>\n"
-    "python, cpp (C++), c, rust, javascript, go, java, typescript, bash, lua\n\n"
-    "<b>/status</b> -- Cek status sistem Nexus secara real-time\n\n"
+    "  <code>/polyglot java quicksort dengan generics</code>\n\n"
+    "<b>Bahasa Didukung:</b>\n"
+    "python, cpp, c, rust, javascript, go, java, typescript, bash, lua\n\n"
+    "<b>/status</b> -- Status sistem &amp; sandbox aktif\n\n"
+    "<b>/clearcache</b> -- Hapus semua sandbox &amp; cache. Sandbox baru akan\n"
+    "  dibuat otomatis saat request /polyglot berikutnya.\n\n"
     "<b>/help</b> -- Tampilkan panduan ini\n\n"
-    "<b>Pipeline Zero-Error:</b>\n"
-    "1. RAG -&gt; Scraping GitHub untuk library terbaru 2026\n"
-    "2. Sintesis -&gt; Gemini CLI menulis kode optimal\n"
-    "3. Sandbox -&gt; Eksekusi terisolasi (timeout anti-hang)\n"
-    "4. Auto-Heal -&gt; Perbaikan otomatis hingga 5x jika ada error"
+    "<b>Fitur Otomatis:</b>\n"
+    "- Auto-install compiler jika belum ada (tanpa perlu tanya)\n"
+    "- Sandbox PERSISTEN per task (tidak dihapus otomatis)\n"
+    "- Setelah 5x gagal: meminta instruksi tambahan (tanpa batas waktu)\n"
+    "- Kirim /clearcache untuk reset semua sandbox"
 )
 
 
@@ -149,7 +182,6 @@ HELP_TEXT = (
 # ============================================================
 
 def _resolve_language(raw_lang: str) -> Optional[str]:
-    """Resolve alias bahasa ke nama kanonik."""
     raw = raw_lang.lower().strip()
     if raw in LANGUAGE_CONFIG:
         return raw
@@ -160,10 +192,6 @@ def _resolve_language(raw_lang: str) -> Optional[str]:
 
 
 def _is_command_ambiguous(task_desc: str) -> bool:
-    """
-    Deteksi apakah deskripsi tugas terlalu pendek/ambigu.
-    Jika iya, bot akan meminta klarifikasi sebelum eksekusi.
-    """
     if not task_desc or len(task_desc.strip()) < 10:
         return True
     words = task_desc.strip().split()
@@ -176,11 +204,104 @@ def _is_command_ambiguous(task_desc: str) -> bool:
 
 
 def _clean_code(raw: str) -> str:
-    """Bersihkan sisa markdown dari output Gemini CLI."""
     raw = raw.strip()
     raw = re.sub(r"^\s*`{3}[a-zA-Z]*\s*\n?", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"\n?\s*`{3}\s*$", "", raw)
     return raw.strip()
+
+
+def _get_sandbox_dir(task_id: str) -> str:
+    """Ambil atau buat sandbox directory persisten untuk task ini."""
+    sandbox = _active_sandboxes.get(task_id)
+    if not sandbox or not os.path.exists(sandbox):
+        os.makedirs(POLYGLOT_SANDBOX_ROOT, exist_ok=True)
+        sandbox = os.path.join(POLYGLOT_SANDBOX_ROOT, f"task_{task_id}")
+        os.makedirs(sandbox, exist_ok=True)
+        _active_sandboxes[task_id] = sandbox
+    return sandbox
+
+
+# ============================================================
+# AUTO-INSTALLER (Tanpa Tanya Pengguna)
+# ============================================================
+
+async def _auto_install_compiler(language: str, send_fn) -> bool:
+    """
+    Install compiler/runtime yang hilang secara otomatis menggunakan
+    apt-get / pip3 / npm / rustup tanpa meminta persetujuan pengguna.
+
+    Returns True jika install berhasil, False jika gagal.
+    """
+    if language in _installed_compilers:
+        return True
+
+    cfg = LANGUAGE_CONFIG.get(language, {})
+    install_cmd = cfg.get("auto_install")
+
+    if not install_cmd:
+        return True  # tidak perlu install (bash, python sudah ada)
+
+    await send_fn(
+        f"<b>Auto-Install Dimulai</b>\n"
+        f"Compiler <code>{language}</code> tidak ditemukan.\n"
+        f"Menginstall otomatis...\n"
+        f"<code>{install_cmd[:120]}</code>"
+    )
+
+    console_terminal_interface.print(
+        f"[bold yellow][Polyglot Auto-Install] {language}: {install_cmd}[/bold yellow]"
+    )
+
+    try:
+        loop = asyncio.get_running_loop()
+
+        # Untuk Rust (rustup) perlu env PATH tambahan setelah install
+        env = os.environ.copy()
+        cargo_bin = os.path.expanduser("~/.cargo/bin")
+        if cargo_bin not in env.get("PATH", ""):
+            env["PATH"] = cargo_bin + ":" + env.get("PATH", "")
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+
+        def _run_install():
+            result = subprocess.run(
+                install_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 menit max untuk install
+                env=env,
+            )
+            return result
+
+        result = await loop.run_in_executor(None, _run_install)
+
+        if result.returncode == 0:
+            _installed_compilers.add(language)
+            await send_fn(
+                f"<b>Auto-Install Berhasil!</b>\n"
+                f"Compiler <code>{language}</code> sudah terpasang.\n"
+                f"Melanjutkan eksekusi kode..."
+            )
+            return True
+        else:
+            err = result.stderr[:400] if result.stderr else "Unknown error"
+            await send_fn(
+                f"<b>Auto-Install Gagal</b>\n"
+                f"Compiler <code>{language}</code> tidak bisa diinstall otomatis.\n"
+                f"Error:\n<pre>{err}</pre>\n\n"
+                f"Install manual di VPS:\n<code>{install_cmd}</code>"
+            )
+            return False
+
+    except subprocess.TimeoutExpired:
+        await send_fn(
+            f"<b>Auto-Install Timeout</b> (5 menit).\n"
+            f"Install manual: <code>{install_cmd}</code>"
+        )
+        return False
+    except Exception as e:
+        await send_fn(f"<b>Auto-Install Error:</b> <code>{e}</code>")
+        return False
 
 
 # ============================================================
@@ -189,9 +310,8 @@ def _clean_code(raw: str) -> str:
 
 async def search_github_universal(task: str, language: str) -> str:
     """
-    Mencari repository dan kode terbaru di GitHub untuk bahasa apapun.
-    Digunakan sebagai RAG Knowledge Base untuk sintesis kode yang
-    menggunakan library dan arsitektur paling modern (SotA 2026).
+    Mencari repository terbaru di GitHub untuk bahasa apapun.
+    RAG Knowledge Base — library & arsitektur SotA 2026.
     """
     github_token = (
         os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
@@ -199,7 +319,7 @@ async def search_github_universal(task: str, language: str) -> str:
     )
     headers = {
         "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "NexusPolyglot/2.0",
+        "User-Agent": "NexusPolyglot/3.0",
     }
     if github_token:
         headers["Authorization"] = f"Bearer {github_token}"
@@ -230,14 +350,12 @@ async def search_github_universal(task: str, language: str) -> str:
 
         items = res.json().get("items", [])[:5]
         if not items:
-            return "[GitHub RAG: Tidak ada hasil relevan untuk query ini]"
+            return "[GitHub RAG: Tidak ada hasil relevan]"
 
         rag_text = f"GITHUB RAG ({language.upper()} TOP LIBRARIES & ARCHITECTURE, 2024-2026):\n"
         for item in items:
             desc = (item.get("description") or "")[:120]
-            rag_text += (
-                f"- {item['full_name']} | Stars:{item.get('stargazers_count', 0)} | {desc}\n"
-            )
+            rag_text += f"- {item['full_name']} | Stars:{item.get('stargazers_count', 0)} | {desc}\n"
         return rag_text
 
     except Exception as e:
@@ -250,11 +368,14 @@ async def search_github_universal(task: str, language: str) -> str:
 
 class PolyglotSynthesizerAgent:
     """
-    Agent AI yang mensintesis kode dalam bahasa apapun menggunakan Gemini CLI,
-    menjalankannya di sandbox terisolasi, dan auto-heal hingga bebas error.
+    Agent AI yang mensintesis kode dalam bahasa apapun, mengeksekusi di
+    sandbox persisten, auto-install compiler yang hilang, dan meminta
+    instruksi tambahan dari pengguna jika semua percobaan gagal.
 
-    Pipeline:
-      RAG -> Sintesis -> Sandbox Execution -> Auto-Heal (loop) -> Kirim ke Telegram
+    Pipeline v3:
+      RAG -> Sintesis -> Auto-Install (jika perlu) -> Sandbox Execution
+      -> Auto-Heal Loop -> [Jika tetap gagal] Minta Instruksi Tambahan
+      -> Coba Lagi (tanpa batas waktu tunggu user)
     """
 
     def __init__(self):
@@ -277,15 +398,19 @@ class PolyglotSynthesizerAgent:
         env["TERM"] = "dumb"
         env["NO_COLOR"] = "1"
 
+        # Tambahkan cargo bin ke PATH untuk Rust
+        cargo_bin = os.path.expanduser("~/.cargo/bin")
+        if cargo_bin not in env.get("PATH", ""):
+            env["PATH"] = cargo_bin + ":" + env.get("PATH", "")
+
         full_input = f"[SYSTEM]:\n{system_prompt}\n\n[TASK]:\n{user_prompt}"
         command = [
             GEMINI_CLI_PATH,
-            "-m", "models/gemma-4-31b-it",  # 1500 RPD per key, sesuai arsitektur Nexus
+            "-m", "models/gemma-4-31b-it",  # 1500 RPD per key
             "-y",
             "-p", (
                 "Output HANYA kode murni yang langsung bisa dieksekusi. "
-                "Tanpa markdown, tanpa penjelasan, tanpa blok ```, tanpa komentar berlebihan. "
-                "Langsung kode saja."
+                "Tanpa markdown, tanpa penjelasan, tanpa blok ```, tanpa komentar berlebihan."
             ),
         ]
 
@@ -308,22 +433,23 @@ class PolyglotSynthesizerAgent:
             return f"ERROR: {e}"
 
     def _execute_in_sandbox(
-        self, code: str, language: str
-    ) -> Tuple[bool, str, str]:
+        self, code: str, language: str, task_id: str
+    ) -> Tuple[bool, str, str, bool]:
         """
-        Eksekusi kode di sandbox terisolasi (subprocess) dengan timeout ketat.
+        Eksekusi kode di sandbox PERSISTEN (tidak dihapus otomatis).
+        Sandbox untuk task ini ada di POLYGLOT_SANDBOX_ROOT/task_{task_id}/
 
         Returns:
-            (success: bool, stdout: str, stderr: str)
+            (success: bool, stdout: str, stderr: str, binary_missing: bool)
+            binary_missing=True berarti perlu auto-install
         """
         cfg = LANGUAGE_CONFIG.get(language)
         if not cfg:
-            return False, "", f"Bahasa '{language}' tidak didukung dalam sandbox."
+            return False, "", f"Bahasa '{language}' tidak didukung.", False
 
-        tmpdir = tempfile.mkdtemp(
-            dir=TEMP_IO_DIRECTORY if os.path.exists(TEMP_IO_DIRECTORY) else None
-        )
-        task_id = uuid.uuid4().hex[:8]
+        # Gunakan sandbox persisten (tidak dibuat ulang setiap percobaan)
+        tmpdir = _get_sandbox_dir(task_id)
+        filename_base = f"nexus_{language}_{task_id[:8]}"
 
         classname = "Main"
         if language == "java":
@@ -332,9 +458,15 @@ class PolyglotSynthesizerAgent:
                 classname = m.group(1)
             filename = os.path.join(tmpdir, f"{classname}.java")
         else:
-            filename = os.path.join(tmpdir, f"nexus_poly_{task_id}{cfg['ext']}")
+            filename = os.path.join(tmpdir, f"{filename_base}{cfg['ext']}")
 
-        binary = os.path.join(tmpdir, f"nexus_bin_{task_id}")
+        binary = os.path.join(tmpdir, f"{filename_base}_bin")
+
+        # Update PATH untuk Rust
+        env = os.environ.copy()
+        cargo_bin = os.path.expanduser("~/.cargo/bin")
+        if cargo_bin not in env.get("PATH", ""):
+            env["PATH"] = cargo_bin + ":" + env.get("PATH", "")
 
         def _fmt(cmd_list):
             return [
@@ -356,9 +488,10 @@ class PolyglotSynthesizerAgent:
                     text=True,
                     timeout=EXECUTION_TIMEOUT_SECONDS,
                     cwd=tmpdir,
+                    env=env,
                 )
                 if comp.returncode != 0:
-                    return False, "", f"[COMPILE ERROR]:\n{comp.stderr[:2000]}"
+                    return False, "", f"[COMPILE ERROR]:\n{comp.stderr[:2000]}", False
 
             run = subprocess.run(
                 _fmt(cfg["run_cmd"]),
@@ -366,89 +499,85 @@ class PolyglotSynthesizerAgent:
                 text=True,
                 timeout=EXECUTION_TIMEOUT_SECONDS,
                 cwd=tmpdir,
+                env=env,
             )
             if run.returncode == 0:
-                return True, run.stdout[:3000], ""
-            return False, run.stdout[:1000], run.stderr[:2000]
+                return True, run.stdout[:3000], "", False
+            return False, run.stdout[:1000], run.stderr[:2000], False
 
         except subprocess.TimeoutExpired:
             return (
                 False, "",
                 f"[TIMEOUT]: Eksekusi melebihi {EXECUTION_TIMEOUT_SECONDS}s. "
-                "Pastikan tidak ada infinite loop tanpa break condition.",
+                "Tidak ada infinite loop tanpa break condition.",
+                False,
             )
         except FileNotFoundError as e:
-            return (
-                False, "",
-                f"[BINARY NOT FOUND]: {e}\n"
-                f"Pastikan compiler untuk '{language}' sudah terinstall di VPS.",
-            )
+            # Binary tidak ditemukan — perlu auto-install
+            return False, "", f"[BINARY NOT FOUND]: {e}", True
         except Exception as e:
-            return False, "", f"[SANDBOX ERROR]: {e}"
-        finally:
-            try:
-                shutil.rmtree(tmpdir, ignore_errors=True)
-            except Exception:
-                pass
+            return False, "", f"[SANDBOX ERROR]: {e}", False
 
     async def synthesize_and_execute(
         self,
         language: str,
         task_desc: str,
+        task_id: str,
         send_fn,
+        ask_instructions_fn,
         clarify_fn,
     ) -> str:
         """
-        Pipeline utama Zero-Error:
-          Tahap 0: Clarification Protocol (jika perintah ambigu)
+        Pipeline utama v3:
+          Tahap 0: Clarification (jika perintah ambigu)
           Tahap 1: RAG GitHub Knowledge Scraping
           Tahap 2: Sintesis kode via Gemini CLI
-          Tahap 3: Sandboxed Execution
-          Tahap 4: Auto-Heal Loop (hingga MAX_AUTO_HEAL_ATTEMPTS)
-          Tahap Final: Kirim hasil ke Telegram
+          Tahap 3: Auto-Install jika compiler hilang
+          Tahap 4: Sandboxed Execution (sandbox persisten)
+          Tahap 5: Auto-Heal Loop (5x)
+          Tahap 6: [Jika semua gagal] Minta instruksi tambahan TANPA timeout
+          Tahap 7: Coba ulang dari sintesis dengan konteks baru
         """
         # --- Tahap 0: Clarification Protocol ---
         if _is_command_ambiguous(task_desc):
             clarification = await clarify_fn(
                 f"<b>Perintah terlalu singkat / ambigu!</b>\n\n"
                 f"Bahasa: <code>{language}</code>\n"
-                f"Task saat ini: <code>{task_desc}</code>\n\n"
-                f"Untuk melanjutkan, tolong jawab:\n"
+                f"Task: <code>{task_desc}</code>\n\n"
+                f"Tolong jawab:\n"
                 f"- Apa yang harus dikerjakan program secara spesifik?\n"
-                f"- Input apa yang diterima? (contoh data hardcoded?)\n"
-                f"- Output apa yang diharapkan?\n"
+                f"- Input/output apa yang diharapkan?\n"
                 f"- Ada library/framework khusus?\n\n"
-                f"Balas dalam {CLARIFICATION_TIMEOUT_SECONDS} detik atau perintah dibatalkan."
+                f"(Tidak ada batas waktu — balas kapanpun)"
             )
             if not clarification:
-                return "Perintah dibatalkan karena tidak ada klarifikasi."
-            task_desc = f"{task_desc}. Klarifikasi tambahan: {clarification}"
+                return "Perintah dibatalkan."
+            task_desc = f"{task_desc}. Klarifikasi: {clarification}"
 
         await send_fn(
-            f"<b>[NEXUS POLYGLOT]</b> Pipeline dimulai!\n"
+            f"<b>[NEXUS POLYGLOT v3]</b> Pipeline dimulai!\n"
             f"Bahasa: <code>{language.upper()}</code>\n"
-            f"Task: <code>{task_desc[:200]}</code>\n\n"
-            f"Tahap 1/4: RAG Knowledge Scraping (GitHub 2026)..."
+            f"Task: <code>{task_desc[:200]}</code>\n"
+            f"Sandbox ID: <code>{task_id[:8]}</code>\n\n"
+            f"Tahap 1/4: RAG GitHub Scraping..."
         )
 
-        # --- Tahap 1: RAG GitHub ---
+        # --- Tahap 1: RAG ---
         rag_context = await search_github_universal(task_desc, language)
-
         await send_fn("RAG selesai. Tahap 2/4: Sintesis kode dengan Gemini AI...")
 
-        # --- Tahap 2: Sintesis Kode ---
+        # --- Tahap 2: Sintesis ---
         system_prompt = (
-            f"Anda adalah ahli pemrograman {language.upper()} tingkat senior (SotA 2026).\n"
-            f"Tugas: Tulis kode {language.upper()} yang BERSIH, EFISIEN, dan LANGSUNG BISA DIJALANKAN.\n"
-            f"Output: HANYA kode murni -- tanpa penjelasan, tanpa markdown, tanpa komentar berlebihan.\n\n"
-            f"Gunakan library/arsitektur terbaik berdasarkan referensi GitHub terbaru ini:\n"
-            f"{rag_context}\n\n"
-            f"ATURAN WAJIB (Zero-Error Contract):\n"
-            f"- TIDAK BOLEH ada infinite loop tanpa break/exit condition\n"
-            f"- Handle SEMUA potential error/exception dengan tepat\n"
-            f"- Kode harus bisa di-compile dan run di Linux Ubuntu 22.04\n"
-            f"- TIDAK BOLEH ada input() interaktif -- gunakan contoh data hardcoded\n"
-            f"- Timeout eksekusi maksimal {EXECUTION_TIMEOUT_SECONDS} detik"
+            f"Anda adalah ahli {language.upper()} senior (SotA 2026).\n"
+            f"Tulis kode {language.upper()} BERSIH, EFISIEN, LANGSUNG BISA DIJALANKAN.\n"
+            f"Output: HANYA kode murni.\n\n"
+            f"Referensi GitHub terbaru:\n{rag_context}\n\n"
+            f"ZERO-ERROR CONTRACT:\n"
+            f"- TIDAK ada infinite loop tanpa break\n"
+            f"- Handle semua error/exception\n"
+            f"- Harus bisa run di Linux Ubuntu 22.04\n"
+            f"- TIDAK ada input() interaktif — data hardcoded\n"
+            f"- Timeout maks {EXECUTION_TIMEOUT_SECONDS} detik"
         )
 
         async with POLYGLOT_CLI_SEMAPHORE:
@@ -457,87 +586,147 @@ class PolyglotSynthesizerAgent:
         if not code or code.startswith("ERROR"):
             return f"Sintesis gagal: {code}"
 
-        # --- Tahap 3 & 4: Execution + Auto-Heal Loop ---
-        last_stderr = ""
-        for attempt in range(1, MAX_AUTO_HEAL_ATTEMPTS + 1):
-            await send_fn(
-                f"Tahap 3-4/4: Sandbox Execution "
-                f"(Percobaan {attempt}/{MAX_AUTO_HEAL_ATTEMPTS})..."
-            )
+        # --- Loop utama: Execution + Auto-Heal + Ask Instructions ---
+        extra_context = ""
+        round_number = 0
 
-            loop = asyncio.get_running_loop()
-            success, stdout, stderr = await loop.run_in_executor(
-                None, self._execute_in_sandbox, code, language
-            )
-
-            if success:
-                out_preview = stdout[:500] if stdout else "(Tidak ada output -- sukses tanpa stdout)"
-                final_msg = (
-                    f"<b>[NEXUS POLYGLOT] BERHASIL!</b>\n\n"
-                    f"Percobaan: <code>{attempt}/{MAX_AUTO_HEAL_ATTEMPTS}</code>\n"
-                    f"Bahasa: <code>{language.upper()}</code>\n"
-                    f"Task: <code>{task_desc[:150]}</code>\n\n"
-                    f"<b>Output:</b>\n<pre>{out_preview}</pre>\n\n"
-                    f"<b>Kode Final ({language.upper()}):</b>\n"
-                    f"<pre>{code[:1500]}</pre>"
-                )
-                await send_fn(final_msg)
-                return "success"
-
-            # Gagal -- Auto-Heal
-            last_stderr = stderr
-            if attempt < MAX_AUTO_HEAL_ATTEMPTS:
-                err_preview = stderr[:400] if stderr else "Unknown error"
+        while True:
+            round_number += 1
+            if round_number > 1:
                 await send_fn(
-                    f"Error terdeteksi (Percobaan {attempt})! "
-                    f"Auto-Heal dimulai...\n<pre>{err_preview}</pre>"
+                    f"<b>Mencoba lagi</b> dengan instruksi tambahan (Ronde {round_number})...\n"
+                    f"Tahap 2: Re-sintesis kode..."
                 )
-
-                heal_prompt = (
-                    f"Kode {language.upper()} ini GAGAL dieksekusi dengan error berikut:\n"
-                    f"[ERROR OUTPUT]:\n{stderr[:1000]}\n\n"
-                    f"[KODE YANG GAGAL]:\n{code}\n\n"
-                    f"[TASK ASLI]:\n{task_desc}\n\n"
-                    f"Analisis error dengan cermat dan perbaiki SEMUA masalah tersebut. "
-                    f"Keluarkan HANYA kode murni yang sudah diperbaiki dan siap dieksekusi."
-                )
-
+                # Re-sintesis dengan konteks tambahan dari pengguna
                 async with POLYGLOT_CLI_SEMAPHORE:
                     code = await self._call_gemini(
-                        f"Anda adalah ahli debug {language.upper()} senior. "
-                        "Output HANYA kode murni yang sudah diperbaiki, tanpa penjelasan apapun.",
-                        heal_prompt,
+                        system_prompt + f"\n\nINSTRUKSI TAMBAHAN DARI PENGGUNA:\n{extra_context}",
+                        task_desc
                     )
-
                 if not code or code.startswith("ERROR"):
+                    return f"Re-sintesis gagal: {code}"
+
+            # --- Tahap 3 & 4: Auto-Install + Execution + Auto-Heal (5x) ---
+            last_stderr = ""
+            success = False
+
+            for attempt in range(1, MAX_AUTO_HEAL_ATTEMPTS + 1):
+                await send_fn(
+                    f"Sandbox Execution (Ronde {round_number}, "
+                    f"Percobaan {attempt}/{MAX_AUTO_HEAL_ATTEMPTS})..."
+                )
+
+                loop = asyncio.get_running_loop()
+                ok, stdout, stderr, binary_missing = await loop.run_in_executor(
+                    None, self._execute_in_sandbox, code, language, task_id
+                )
+
+                # Auto-install jika binary hilang
+                if binary_missing:
+                    installed = await _auto_install_compiler(language, send_fn)
+                    if installed:
+                        # Coba ulang eksekusi setelah install
+                        ok, stdout, stderr, binary_missing = await loop.run_in_executor(
+                            None, self._execute_in_sandbox, code, language, task_id
+                        )
+                    else:
+                        # Install gagal — hentikan loop ini
+                        last_stderr = f"[AUTO-INSTALL FAILED]: Compiler {language} tidak bisa diinstall."
+                        break
+
+                if ok:
+                    out_preview = stdout[:500] if stdout else "(Sukses tanpa output stdout)"
+                    final_msg = (
+                        f"<b>[NEXUS POLYGLOT] BERHASIL!</b>\n\n"
+                        f"Ronde: <code>{round_number}</code> | "
+                        f"Percobaan: <code>{attempt}/{MAX_AUTO_HEAL_ATTEMPTS}</code>\n"
+                        f"Bahasa: <code>{language.upper()}</code>\n"
+                        f"Sandbox: <code>{task_id[:8]}</code> (PERSISTEN - tidak dihapus)\n\n"
+                        f"<b>Output:</b>\n<pre>{out_preview}</pre>\n\n"
+                        f"<b>Kode Final:</b>\n<pre>{code[:1500]}</pre>\n\n"
+                        f"Kirim /clearcache untuk reset semua sandbox."
+                    )
+                    await send_fn(final_msg)
+                    success = True
                     break
 
-        # Semua percobaan habis
-        err_preview = last_stderr[:500] if last_stderr else "Tidak ada detail error."
-        return (
-            f"<b>[NEXUS POLYGLOT] GAGAL</b> setelah {MAX_AUTO_HEAL_ATTEMPTS} percobaan.\n\n"
-            f"<b>Error Terakhir:</b>\n<pre>{err_preview}</pre>\n\n"
-            f"<b>Kode Terakhir:</b>\n<pre>{code[:800]}</pre>\n\n"
-            f"Saran: Coba perjelas deskripsi task atau cek apakah "
-            f"compiler <code>{language}</code> sudah terinstall di VPS."
-        )
+                # Gagal — Auto-Heal
+                last_stderr = stderr
+                if attempt < MAX_AUTO_HEAL_ATTEMPTS:
+                    err_preview = stderr[:300] if stderr else "Unknown error"
+                    await send_fn(
+                        f"Error (Percobaan {attempt}). Auto-Heal...\n"
+                        f"<pre>{err_preview}</pre>"
+                    )
+
+                    heal_prompt = (
+                        f"Kode {language.upper()} ini GAGAL:\n"
+                        f"[ERROR]:\n{stderr[:800]}\n\n"
+                        f"[KODE GAGAL]:\n{code}\n\n"
+                        f"[TASK]:\n{task_desc}\n\n"
+                        f"Perbaiki SEMUA error. Output HANYA kode murni."
+                    )
+                    async with POLYGLOT_CLI_SEMAPHORE:
+                        code = await self._call_gemini(
+                            f"Ahli debug {language.upper()} senior. Output kode murni saja.",
+                            heal_prompt,
+                        )
+                    if not code or code.startswith("ERROR"):
+                        break
+
+            if success:
+                return "success"
+
+            # --- Tahap 6: Semua percobaan gagal — Minta instruksi TANPA timeout ---
+            err_preview = last_stderr[:400] if last_stderr else "Error tidak diketahui."
+
+            await send_fn(
+                f"<b>[Auto-Heal Habis]</b> {MAX_AUTO_HEAL_ATTEMPTS}x percobaan gagal di Ronde {round_number}.\n\n"
+                f"Error terakhir:\n<pre>{err_preview}</pre>\n\n"
+                f"Kode terakhir:\n<pre>{code[:600]}</pre>"
+            )
+
+            # Minta instruksi tambahan dari pengguna (TANPA TIMEOUT)
+            extra_context = await ask_instructions_fn(
+                f"<b>Butuh Instruksi Tambahan</b>\n\n"
+                f"Sistem sudah mencoba {MAX_AUTO_HEAL_ATTEMPTS}x dan masih gagal.\n\n"
+                f"Tolong berikan salah satu dari:\n"
+                f"- Penjelasan lebih spesifik tentang logika yang diinginkan\n"
+                f"- Library/versi tertentu yang harus dipakai\n"
+                f"- Contoh input/output yang diharapkan\n"
+                f"- Format data yang berbeda\n\n"
+                f"<b>Tidak ada batas waktu</b> — balas kapanpun kamu siap.\n"
+                f"Atau kirim /cancel untuk membatalkan task ini."
+            )
+
+            if not extra_context or extra_context.strip().lower() in ["/cancel", "cancel", "batal"]:
+                return (
+                    f"Task dibatalkan oleh pengguna setelah {round_number} ronde.\n"
+                    f"Sandbox <code>{task_id[:8]}</code> tetap tersimpan.\n"
+                    f"Kirim /clearcache untuk reset."
+                )
+
+            # Lanjut ke ronde berikutnya dengan instruksi baru
+            await send_fn(
+                f"Instruksi diterima! Memulai Ronde {round_number + 1} dengan konteks baru..."
+            )
 
 
 # ============================================================
 # TELEGRAM LISTENER (NON-BLOCKING BACKGROUND TASK)
 # ============================================================
 
-_pending_clarifications: dict = {}
+_pending_clarifications: dict = {}   # chat_id -> asyncio.Future
+_pending_instructions: dict = {}     # chat_id -> asyncio.Future (no timeout)
+_active_tasks: dict = {}             # chat_id -> task_id (task yang sedang berjalan)
 
 
 class TelegramPolyglotListener:
     """
-    Telegram long-polling listener yang berjalan sebagai asyncio background task.
-    Sepenuhnya non-blocking -- tidak mengganggu pipeline pembuatan game Roblox
-    yang sedang berjalan dalam antrian yang sama.
+    Telegram long-polling listener — asyncio background task.
+    Non-blocking: tidak mengganggu pipeline Roblox.
 
-    Security: Hanya menerima perintah dari TELEGRAM_CHAT_ID (Master Node).
-    Perintah dari chat ID lain langsung ditolak.
+    Security: Hanya menerima dari TELEGRAM_CHAT_ID (Master Node).
     """
 
     def __init__(self):
@@ -548,7 +737,6 @@ class TelegramPolyglotListener:
         self._running = True
 
     async def _get_updates(self) -> list:
-        """Long-polling update dari Telegram API (timeout 30 detik)."""
         url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
         params = {
             "offset": self.last_update_id + 1,
@@ -570,13 +758,8 @@ class TelegramPolyglotListener:
         return []
 
     async def _send(self, chat_id: str, text: str):
-        """Kirim pesan teks ke Telegram dengan parse_mode HTML."""
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-        }
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
@@ -590,10 +773,8 @@ class TelegramPolyglotListener:
 
     async def _wait_for_clarification(self, question: str) -> Optional[str]:
         """
-        Clarification Protocol:
-        1. Kirim pertanyaan ke user
-        2. Tunggu balasan hingga CLARIFICATION_TIMEOUT_SECONDS
-        3. Jika timeout, kembalikan None (perintah dibatalkan)
+        Clarification Protocol dengan NO TIMEOUT.
+        Menunggu selamanya sampai pengguna balas.
         """
         await self._send(self.master_chat_id, question)
 
@@ -601,20 +782,35 @@ class TelegramPolyglotListener:
         _pending_clarifications[self.master_chat_id] = future
 
         try:
-            result = await asyncio.wait_for(future, timeout=CLARIFICATION_TIMEOUT_SECONDS)
+            # Tanpa timeout — tunggu selamanya
+            result = await future
             return result
-        except asyncio.TimeoutError:
-            _pending_clarifications.pop(self.master_chat_id, None)
-            await self._send(
-                self.master_chat_id,
-                "Timeout! Tidak ada klarifikasi diterima. Perintah dibatalkan otomatis."
-            )
+        except asyncio.CancelledError:
             return None
         finally:
             _pending_clarifications.pop(self.master_chat_id, None)
 
+    async def _wait_for_instructions(self, message: str) -> Optional[str]:
+        """
+        Post-Failure Instruction Protocol dengan NO TIMEOUT.
+        Menunggu selamanya sampai pengguna memberikan instruksi tambahan
+        atau mengirim /cancel.
+        """
+        await self._send(self.master_chat_id, message)
+
+        future = asyncio.get_running_loop().create_future()
+        _pending_instructions[self.master_chat_id] = future
+
+        try:
+            # Tanpa timeout — tunggu selamanya
+            result = await future
+            return result
+        except asyncio.CancelledError:
+            return None
+        finally:
+            _pending_instructions.pop(self.master_chat_id, None)
+
     async def _handle_update(self, update: dict):
-        """Proses satu update Telegram secara aman."""
         message = update.get("message", {})
         chat_id = str(message.get("chat", {}).get("id", ""))
         text = (message.get("text") or "").strip()
@@ -622,15 +818,19 @@ class TelegramPolyglotListener:
         if not text or not chat_id:
             return
 
-        # Security: Hanya Master Node
+        # Security
         if chat_id != self.master_chat_id:
-            await self._send(
-                chat_id,
-                "Akses ditolak. Sistem hanya menerima perintah dari Master Node."
-            )
+            await self._send(chat_id, "Akses ditolak. Hanya Master Node.")
             return
 
-        # Cek clarification yang sedang menunggu
+        # Priority 1: Cek pending instructions (post-failure)
+        if chat_id in _pending_instructions:
+            fut = _pending_instructions.get(chat_id)
+            if fut and not fut.done():
+                fut.set_result(text)
+                return
+
+        # Priority 2: Cek pending clarification
         if chat_id in _pending_clarifications:
             fut = _pending_clarifications.get(chat_id)
             if fut and not fut.done():
@@ -642,25 +842,24 @@ class TelegramPolyglotListener:
             await self._handle_polyglot(chat_id, text)
         elif text.startswith("/status"):
             await self._handle_status(chat_id)
+        elif text.startswith("/clearcache"):
+            await self._handle_clearcache(chat_id)
         elif text.startswith("/help") or text.startswith("/start"):
             await self._send(chat_id, HELP_TEXT)
         else:
             await self._send(
                 chat_id,
-                f"Perintah tidak dikenal: <code>{text[:50]}</code>\n\n"
-                "Ketik /help untuk panduan lengkap."
+                f"Perintah tidak dikenal: <code>{text[:50]}</code>\n"
+                "Ketik /help untuk panduan."
             )
 
     async def _handle_polyglot(self, chat_id: str, text: str):
-        """Handler untuk perintah /polyglot [lang] [desc]."""
         parts = text.split(maxsplit=2)
 
         if len(parts) < 2:
             await self._send(
                 chat_id,
-                "Format salah!\n\n"
-                "Gunakan: <code>/polyglot [bahasa] [deskripsi tugas]</code>\n"
-                "Contoh: <code>/polyglot python buat kalkulator dengan operasi dasar</code>"
+                "Format salah!\nGunakan: <code>/polyglot [bahasa] [deskripsi]</code>"
             )
             return
 
@@ -672,63 +871,133 @@ class TelegramPolyglotListener:
             supported = ", ".join(sorted(LANGUAGE_CONFIG.keys()))
             await self._send(
                 chat_id,
-                f"Bahasa '<code>{raw_lang}</code>' tidak didukung.\n\n"
-                f"Bahasa yang tersedia:\n<code>{supported}</code>"
+                f"Bahasa '<code>{raw_lang}</code>' tidak didukung.\n"
+                f"Tersedia: <code>{supported}</code>"
             )
             return
 
-        # Jalankan pipeline sebagai background task (tidak memblok listener)
+        # Buat task_id baru untuk setiap request (sandbox baru)
+        task_id = uuid.uuid4().hex
+
         asyncio.create_task(
             self.agent.synthesize_and_execute(
                 language=language,
                 task_desc=task_desc,
+                task_id=task_id,
                 send_fn=lambda msg: self._send(chat_id, msg),
+                ask_instructions_fn=lambda msg: self._wait_for_instructions(msg),
                 clarify_fn=lambda msg: self._wait_for_clarification(msg),
             )
         )
 
     async def _handle_status(self, chat_id: str):
-        """Handler untuk perintah /status."""
+        sandbox_count = len(_active_sandboxes)
+        installed_langs = ", ".join(sorted(_installed_compilers)) if _installed_compilers else "belum ada"
+
+        # Hitung total ukuran sandbox
+        total_size_mb = 0
+        for path in _active_sandboxes.values():
+            if os.path.exists(path):
+                for root, dirs, files in os.walk(path):
+                    for f in files:
+                        try:
+                            total_size_mb += os.path.getsize(os.path.join(root, f))
+                        except Exception:
+                            pass
+        total_size_mb = round(total_size_mb / (1024 * 1024), 2)
+
         try:
             from nexus_database import establish_database_connection
             db = establish_database_connection()
             cur = db.cursor()
             cur.execute("SELECT COUNT(*) FROM verified_modules")
             mod_count = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM live_telemetry_logs")
-            log_count = cur.fetchone()[0]
             db.close()
-            db_status = f"Online ({mod_count} modul, {log_count} log telemetry)"
+            db_status = f"Online ({mod_count} modul)"
         except Exception as e:
             db_status = f"Error: {e}"
 
-        poly_slots = POLYGLOT_CLI_SEMAPHORE._value
-
         status_msg = (
-            f"<b>NEXUS SYSTEM STATUS</b>\n\n"
+            f"<b>NEXUS SYSTEM STATUS v3</b>\n\n"
             f"Active AI Agents: <code>{len(ACTIVE_AGENTS)}</code>\n"
             f"Database: <code>{db_status}</code>\n"
-            f"Polyglot Semaphore: <code>{poly_slots}/2 slot tersedia</code>\n"
+            f"Polyglot Semaphore: <code>{POLYGLOT_CLI_SEMAPHORE._value}/2 slot</code>\n"
+            f"Sandbox Aktif: <code>{sandbox_count}</code> ({total_size_mb} MB)\n"
+            f"Auto-Installed: <code>{installed_langs}</code>\n"
             f"Bahasa Didukung: <code>{len(LANGUAGE_CONFIG)}</code>\n"
-            f"Auto-Heal Max: <code>{MAX_AUTO_HEAL_ATTEMPTS}x percobaan</code>\n"
-            f"Execution Timeout: <code>{EXECUTION_TIMEOUT_SECONDS}s</code>\n"
-            f"Status: <b>AKTIF | OTONOM | TERISOLASI | ANTI-HANG</b>"
+            f"Auto-Heal Max: <code>{MAX_AUTO_HEAL_ATTEMPTS}x per ronde</code>\n"
+            f"Clarification Timeout: <b>TIDAK ADA (tunggu selamanya)</b>\n"
+            f"Instruction Timeout: <b>TIDAK ADA (tunggu selamanya)</b>\n\n"
+            f"Kirim /clearcache untuk reset semua sandbox."
         )
         await self._send(chat_id, status_msg)
 
-    async def start_polling(self):
+    async def _handle_clearcache(self, chat_id: str):
         """
-        Loop polling utama -- berjalan selamanya sebagai asyncio background task.
-        Menangani CancelledError dengan graceful shutdown.
+        Hapus semua sandbox persisten dan reset state.
+        Sandbox baru akan dibuat otomatis saat request /polyglot berikutnya.
         """
+        deleted_count = 0
+        errors = []
+
+        # Hapus semua sandbox directory
+        for task_id, sandbox_path in list(_active_sandboxes.items()):
+            try:
+                if os.path.exists(sandbox_path):
+                    shutil.rmtree(sandbox_path, ignore_errors=True)
+                    deleted_count += 1
+            except Exception as e:
+                errors.append(str(e))
+
+        # Hapus sandbox root jika ada
+        try:
+            if os.path.exists(POLYGLOT_SANDBOX_ROOT):
+                shutil.rmtree(POLYGLOT_SANDBOX_ROOT, ignore_errors=True)
+        except Exception:
+            pass
+
+        # Reset state
+        _active_sandboxes.clear()
+        _installed_compilers.clear()
+
+        # Batalkan pending futures jika ada
+        for fut in list(_pending_clarifications.values()):
+            if not fut.done():
+                fut.cancel()
+        _pending_clarifications.clear()
+
+        for fut in list(_pending_instructions.values()):
+            if not fut.done():
+                fut.cancel()
+        _pending_instructions.clear()
+
+        err_text = f"\nError: {'; '.join(errors)}" if errors else ""
+        await self._send(
+            chat_id,
+            f"<b>Cache Dibersihkan!</b>\n\n"
+            f"Sandbox dihapus: <code>{deleted_count}</code>\n"
+            f"Compiler cache direset: semua\n"
+            f"Pending tasks dibatalkan: semua\n"
+            f"{err_text}\n\n"
+            f"Sandbox baru akan dibuat otomatis saat /polyglot berikutnya."
+        )
+
         console_terminal_interface.print(
-            "[bold cyan][Polyglot Listener] Telegram bot polling dimulai "
-            "(Non-Blocking Background Task)...[/bold cyan]"
+            f"[bold cyan][Polyglot] /clearcache: {deleted_count} sandbox dihapus.[/bold cyan]"
+        )
+
+    async def start_polling(self):
+        console_terminal_interface.print(
+            "[bold cyan][Polyglot Listener v3] Telegram bot polling dimulai "
+            "(Persistent Sandbox + Auto-Install + No-Timeout)...[/bold cyan]"
         )
         await self._send(
             self.master_chat_id,
-            "<b>NEXUS POLYGLOT LISTENER AKTIF!</b>\n\n"
-            "Pipeline Zero-Error siap menerima perintah.\n"
+            "<b>NEXUS POLYGLOT LISTENER v3 AKTIF!</b>\n\n"
+            "Fitur baru:\n"
+            "- Auto-install compiler (tanpa tanya)\n"
+            "- Sandbox persisten (tidak dihapus otomatis)\n"
+            "- Instruksi tambahan tanpa batas waktu\n\n"
             "Ketik /help untuk panduan lengkap."
         )
 
@@ -751,10 +1020,6 @@ class TelegramPolyglotListener:
                 )
                 await asyncio.sleep(5)
 
-        console_terminal_interface.print(
-            "[bold yellow][Polyglot Listener] Shutdown selesai.[/bold yellow]"
-        )
-
 
 # ============================================================
 # ENTRY POINT
@@ -762,18 +1027,13 @@ class TelegramPolyglotListener:
 
 async def start_telegram_polling():
     """
-    Entry point untuk memulai Telegram Polyglot Listener.
-    Dipanggil dari nexus_main.py sebagai background task:
-
+    Entry point — dipanggil dari nexus_main.py:
         asyncio.create_task(start_telegram_polling())
-
-    Jika TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID kosong,
-    listener tidak dimulai dan hanya mencetak warning.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         console_terminal_interface.print(
             "[bold yellow][Polyglot Listener] TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID "
-            "kosong di .env.nexus. Listener tidak dimulai.[/bold yellow]"
+            "kosong. Listener tidak dimulai.[/bold yellow]"
         )
         return
 
