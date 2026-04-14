@@ -280,7 +280,7 @@ class PolyglotSynthesizerAgent:
         full_input = f"[SYSTEM]:\n{system_prompt}\n\n[TASK]:\n{user_prompt}"
         command = [
             GEMINI_CLI_PATH,
-            "-m", "models/gemini-2.5-pro-preview-05-06",
+            "-m", "models/gemma-4-31b-it",  # 1500 RPD per key, sesuai arsitektur Nexus
             "-y",
             "-p", (
                 "Output HANYA kode murni yang langsung bisa dieksekusi. "
