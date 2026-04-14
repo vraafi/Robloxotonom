@@ -556,6 +556,43 @@ async def run_orchestrator():
                     f"\n[bold blue]--- Task {task_num}/{total_tasks}: {task['name']} ---[/bold blue]"
                 )
 
+                # ============================================================
+                # RESUME CHECK: Lewati task yang sudah selesai
+                # Saat sistem di-restart, periksa file di disk + database.
+                # Jika keduanya ada dan valid, langsung lanjut ke task berikutnya.
+                # ============================================================
+                if os.path.exists(task["path"]) and os.path.getsize(task["path"]) > 50:
+                    _db_resume = establish_database_connection()
+                    _cur_resume = _db_resume.cursor()
+                    _cur_resume.execute(
+                        "SELECT module_name FROM verified_modules WHERE module_name = ?",
+                        (task["name"],)
+                    )
+                    _row_resume = _cur_resume.fetchone()
+                    _db_resume.close()
+
+                    if _row_resume:
+                        console_terminal_interface.print(
+                            f"[dim green]⏭️  [RESUME] '{task['name']}' sudah selesai sebelumnya. Dilewati otomatis.[/dim green]"
+                        )
+                        tasks_done += 1
+                        continue
+                    else:
+                        # File ada di disk tapi belum di database (mungkin crash sebelum save DB)
+                        # Sync dulu ke database, lalu skip
+                        try:
+                            with open(task["path"], "r", encoding="utf-8") as _f_resume:
+                                _existing_code = _f_resume.read()
+                            if len(_existing_code.strip()) > 50:
+                                await save_verified_module(task["name"], task["path"], _existing_code)
+                                console_terminal_interface.print(
+                                    f"[dim cyan]🔄 [RESUME-SYNC] '{task['name']}' file ada di disk, disinkronkan ke DB. Dilewati.[/dim cyan]"
+                                )
+                                tasks_done += 1
+                                continue
+                        except Exception:
+                            pass  # File rusak atau tidak bisa dibaca, proses ulang dari awal
+
                 task_start_time = time.time()
                 completed = False
                 prev_err = ""
