@@ -1044,8 +1044,9 @@ class TelegramPolyglotListener:
         Panggil Gemini CLI khusus untuk percakapan chat.
         Model: gemini-3.1-flash-lite-preview (ringan & cepat, hemat rate limit).
         Berbeda dari _call_gemini milik PolyglotSynthesizerAgent yang pakai gemma-4-31b-it.
+        Prioritas key: GEMINI_TELEGRAM_KEY (eksklusif) → fallback ke pool agent.
         """
-        api_key = self.agent.rotator.get_key()
+        api_key = os.getenv("GEMINI_TELEGRAM_KEY", "").strip() or self.agent.rotator.get_key()
         if not api_key:
             return "ERROR: Tidak ada API key tersedia."
 
