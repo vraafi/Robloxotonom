@@ -119,7 +119,6 @@ async def call_gemini_rest(
         "models/gemini-2.0-flash",
     ]
 
-    loop = asyncio.get_event_loop()
     return False, "REST Fallback Not Implemented. Use CLI."
 
 class SurgicalCodePatcher:
