@@ -131,7 +131,7 @@ async def search_github_for_hitbox_armor() -> str:
     _log("[bold cyan][ProjectScanner] Mencari referensi HitboxSeparation armor di GitHub...[/bold cyan]")
 
     github_token = _get_github_token()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # Repo-repo Roblox populer yang bisa dipakai sebagai referensi pattern
     reference_sources = [
