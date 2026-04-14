@@ -1060,42 +1060,44 @@ class TelegramPolyglotListener:
         """
         prompt = (
             f"Klasifikasikan pesan pengguna ini ke salah satu kategori:\n"
-            f"- coding: request membuat/memperbaiki/menjalankan kode program\n"
-            f"- chat: percakapan biasa, sapaan, pertanyaan umum, bukan tentang kode\n"
-            f"- system: pertanyaan tentang bot ini, statusnya, atau cara pakainya\n"
-            f"- unclear: tidak jelas\n\n"
+            f"- coding: permintaan eksplisit untuk membuat, menulis, atau menjalankan kode program\n"
+            f"- chat: percakapan biasa, sapaan, pertanyaan matematika, pertanyaan fakta, bukan tentang coding\n"
+            f"- system: pertanyaan tentang bot ini, kemampuannya, statusnya, atau cara pakainya\n"
+            f"- unclear: benar-benar tidak bisa ditentukan\n\n"
+            f"PENTING: Pertanyaan matematika seperti '1+1', 'berapa 5x5', dll. adalah CHAT, bukan coding.\n"
+            f"PENTING: Sapaan seperti 'halo', 'hai', 'apa kabar' adalah CHAT.\n"
+            f"PENTING: Hanya tandai 'coding' jika pengguna secara eksplisit minta dibuatkan kode/program.\n\n"
             f"Pesan: \"{text}\"\n\n"
             f"Jawab HANYA dengan satu kata: coding, chat, system, atau unclear"
         )
         try:
             result = await self.agent._call_gemini(
-                "Kamu adalah classifier intent. Jawab hanya dengan satu kata.",
+                "Kamu adalah classifier intent. Jawab HANYA satu kata tanpa penjelasan.",
                 prompt
             )
-            result = result.strip().lower()
+            result = result.strip().lower().split()[0] if result.strip() else "unclear"
             if result in ("coding", "chat", "system", "unclear"):
                 return result
-            if any(kw in result for kw in ["code", "kode", "program", "script", "fungsi"]):
-                return "coding"
             return "chat"
         except Exception:
-            return "unclear"
+            return "chat"
 
     async def _handle_chat(self, chat_id: str, text: str):
         """
         Jawab pesan obrolan biasa menggunakan Gemini secara natural.
         """
         system_prompt = (
-            "Kamu adalah asisten AI pada sistem Nexus — sistem otonom pembuat kode Roblox & multi-bahasa. "
-            "Kamu ramah, cerdas, dan presisi. "
-            "Kamu jujur jika tidak tahu sesuatu. "
-            "Kamu berbicara dalam bahasa yang sama dengan pengguna (Indonesia atau Inggris). "
-            "Jika pengguna bertanya tentang kemampuanmu, jelaskan bahwa kamu bisa membuat dan menjalankan kode "
-            "dalam Python, Rust, Go, C++, Java, JavaScript, TypeScript, Lua, C, dan Bash. "
-            "Jika pengguna tampak ingin membuat kode, tanyakan bahasa dan deskripsi tugasnya. "
-            "Jawab singkat dan natural — maksimal 3-4 kalimat."
+            "Kamu adalah Nexus Bot — asisten AI cerdas yang bisa mengobrol dan membuat kode. "
+            "Aturan WAJIB:\n"
+            "1. Jika pengguna bertanya matematika (misal: 1+1, 5x5, akar 144), jawab langsung dengan angka — JANGAN buat kode.\n"
+            "2. Jika pengguna menyapa (halo, hai, apa kabar), balas dengan sapaan ramah.\n"
+            "3. Jika pengguna bertanya fakta umum, jawab langsung dan jelas.\n"
+            "4. Jika pengguna bertanya tentang kemampuanmu, jelaskan bisa membuat & menjalankan kode Python, Rust, Go, C++, Java, JS, TS, Lua, C, Bash.\n"
+            "5. Jika pengguna ingin membuat kode, tanyakan bahasa dan deskripsi tugasnya.\n"
+            "6. Jawab dalam bahasa yang sama dengan pengguna (Indonesia/Inggris).\n"
+            "7. Jawab singkat dan natural — maksimal 3 kalimat. Jangan bertele-tele."
         )
-        user_prompt = f"Pengguna berkata: \"{text}\""
+        user_prompt = text
         try:
             async with POLYGLOT_CLI_SEMAPHORE:
                 reply = await self.agent._call_gemini(system_prompt, user_prompt)
@@ -1104,11 +1106,10 @@ class TelegramPolyglotListener:
             else:
                 await self._send(
                     chat_id,
-                    "Halo! Saya Nexus Bot. Saya bisa membuat dan menjalankan kode dalam berbagai bahasa. "
-                    "Coba kirim: <code>buat fungsi python fibonacci</code>"
+                    "Maaf, ada gangguan sementara. Coba lagi sebentar."
                 )
-        except Exception as e:
-            await self._send(chat_id, f"Maaf, terjadi gangguan sementara. Coba lagi sebentar.")
+        except Exception:
+            await self._send(chat_id, "Maaf, ada gangguan sementara. Coba lagi sebentar.")
 
     async def start_polling(self):
         console_terminal_interface.print(
