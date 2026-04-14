@@ -66,7 +66,7 @@ async def send_telegram_notification(message: str, important: bool = False):
             "parse_mode": "HTML",
         }
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
                 lambda: requests.post(url, json=payload, timeout=10),
@@ -111,7 +111,7 @@ async def send_telegram_document(file_path: str, caption: str = ""):
             except Exception as e:
                 console_terminal_interface.print(f"[bold red]Exception Telegram Document: {e}[/bold red]")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _send)
 
 
@@ -197,7 +197,7 @@ class RobloxDeployer:
         }
         try:
             console_terminal_interface.print("[bold cyan][Deploy] Mengunggah ke Roblox Open Cloud API...[/bold cyan]")
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             with open(COMPILED_GAME_FILE, "rb") as f:
                 file_data = f.read()
