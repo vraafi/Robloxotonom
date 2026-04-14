@@ -220,10 +220,14 @@ class RobloxDeployer:
                 console_terminal_interface.print(
                     f"[bold green]✅ Deployment Roblox Berhasil! (Versi {version_number})[/bold green]"
                 )
-                await send_telegram_notification(
-                    f"✅ Deployment ke Roblox Server berhasil! Versi Place: {version_number}",
-                    important=True
+                success_caption = (
+                    f"✅ DEPLOYMENT BERHASIL! (Evolusi {evolution_level})\n"
+                    f"🎮 Versi Roblox: {version_number}\n"
+                    f"📦 File ini adalah versi final yang sudah aktif di server Roblox.\n"
+                    f"🔗 Buka game kamu di Roblox untuk memverifikasi."
                 )
+                await send_telegram_notification(success_caption, important=True)
+                await send_telegram_document(COMPILED_GAME_FILE, success_caption)
             else:
                 # ── DEPLOYMENT GAGAL: Kirim file .rbxl ke Telegram untuk upload manual ──
                 error_detail = response.text[:300] if response.text else "Tidak ada detail"
