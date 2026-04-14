@@ -762,6 +762,428 @@ class AutoHealerAgent:
             self._github_hitbox_context = ""
 
 
+# ============================================================
+# INSTRUKSI SPESIFIK PER KATEGORI TASK
+# Kunci: prefix kategori task (huruf kapital, tanpa nomor)
+# Nilai: instruksi teknis Luau yang presisi untuk AI
+# ============================================================
+TASK_SPECIFIC_INSTRUCTIONS: dict = {
+
+    "GATHERING_TOOLS": (
+        "[KATEGORI: GATHERING TOOL - KAPAK & BELIUNG]\n"
+        "Anda sedang membuat ALAT PANEN Roblox (Kapak/Beliung).\n"
+        "Ini adalah instance Tool yang DIPAKAI pemain. BUKAN script server biasa!\n"
+        "WAJIB IKUTI ARSITEKTUR INI:\n"
+        "1. Script ini berjalan di dalam Tool (LocalScript di Tool untuk client-side input).\n"
+        "2. Gunakan Tool.Activated:Connect() untuk mendeteksi serangan pemain.\n"
+        "3. Tembakkan workspace:Raycast() dari HumanoidRootPart ke arah CFrame.LookVector (jarak 6 stud).\n"
+        "4. Kapak HANYA mengenai Node ber-tag CollectionService 'Tree'. Beliung HANYA mengenai tag 'Rock'.\n"
+        "5. Saat terkena: kirim hit ke server via RemoteEvent bernama 'HarvestHit' dengan argumen (hitPart, tagName).\n"
+        "6. Server WAJIB memvalidasi: typeof(hitObject) == 'Instance' dan CollectionService:HasTag(hitObject, tagName).\n"
+        "7. Jika Health <= 0: server hancurkan objek (Destroy()) dan spawn RAW_MATERIAL_ITEM di posisi tersebut.\n"
+        "8. CONTOH POLA (MUTLAK IKUTI INI):\n"
+        "--!strict\n"
+        "local Players = game:GetService('Players')\n"
+        "local CollectionService = game:GetService('CollectionService')\n"
+        "local ReplicatedStorage = game:GetService('ReplicatedStorage')\n"
+        "local tool = script.Parent\n"
+        "local HIT_TAG = 'Tree'\n"
+        "local HIT_DISTANCE = 6\n"
+        "local hitEvent = ReplicatedStorage:WaitForChild('HarvestHit')\n"
+        "local conn = tool.Activated:Connect(function()\n"
+        "    local player = Players.LocalPlayer\n"
+        "    local char = player.Character\n"
+        "    if not char then return end\n"
+        "    local hrp = char:FindFirstChild('HumanoidRootPart')\n"
+        "    if not hrp then return end\n"
+        "    local rayParams = RaycastParams.new()\n"
+        "    rayParams.FilterDescendantsInstances = {char}\n"
+        "    rayParams.FilterType = Enum.RaycastFilterType.Exclude\n"
+        "    local result = workspace:Raycast(hrp.Position, hrp.CFrame.LookVector * HIT_DISTANCE, rayParams)\n"
+        "    if result and result.Instance then\n"
+        "        local hit = result.Instance\n"
+        "        if CollectionService:HasTag(hit, HIT_TAG) or (hit.Parent and CollectionService:HasTag(hit.Parent, HIT_TAG)) then\n"
+        "            hitEvent:FireServer(hit, HIT_TAG)\n"
+        "        end\n"
+        "    end\n"
+        "end)\n"
+    ),
+
+    "MONSTER": (
+        "[KATEGORI: MONSTER / NPC MUSUH - AI TEMPUR]\n"
+        "Anda sedang membuat Script Monster/Hewan menggunakan PathfindingService Roblox.\n"
+        "WAJIB IKUTI ARSITEKTUR AI MONSTER:\n"
+        "1. Gunakan PathfindingService:CreatePath() dan path:ComputeAsync() untuk navigasi.\n"
+        "2. Gunakan RunService.Heartbeat:Connect() untuk update AI loop (BUKAN while true do tanpa wait).\n"
+        "3. Variabel WAJIB ADA:\n"
+        "   local Diet: string = 'Carnivore'  -- atau 'Herbivore' atau 'Omnivore'\n"
+        "   local SocialBehavior: string = 'Solitary'  -- atau 'Pack' atau 'Herd'\n"
+        "   local SpawnWeight: number = 3\n"
+        "   local Habitat: string = 'Forest'  -- atau 'Desert', 'Ocean', 'Snow'\n"
+        "   local PerceptionRadius: number = 40\n"
+        "4. DropTable: tabel item yang di-spawn saat monster mati: {['Daging'] = 2, ['Tulang'] = 1}.\n"
+        "5. Saat mati (Humanoid.Died): loop DropTable → spawn fisik Part kecil di posisi monster.\n"
+        "6. Untuk CARNIVORE/OMNIVORE: scan radius untuk item ber-tag CollectionService 'Bait'.\n"
+        "7. PATTERN PATHFINDING WAJIB:\n"
+        "   local path = PathfindingService:CreatePath({AgentRadius=2, AgentHeight=5, AgentCanJump=true})\n"
+        "   path:ComputeAsync(hrp.Position, target)\n"
+        "   if path.Status == Enum.PathStatus.Success then\n"
+        "       for _, waypoint in ipairs(path:GetWaypoints()) do\n"
+        "           humanoid:MoveTo(waypoint.Position)\n"
+        "           humanoid.MoveToFinished:Wait()\n"
+        "       end\n"
+        "   end\n"
+    ),
+
+    "RAW_MATERIAL_ITEM": (
+        "[KATEGORI: RAW MATERIAL - BAHAN MENTAH]\n"
+        "Anda sedang membuat sistem spawn ITEM FISIK yang jatuh ke tanah.\n"
+        "HUKUM RAW MATERIAL (MUTLAK):\n"
+        "1. DILARANG keras memiliki atribut: Recipe, Durability, ArmorTier.\n"
+        "2. WAJIB: local ItemCategory: string = 'Material'\n"
+        "3. WAJIB: local BasePrice: number = 150 (contoh harga)\n"
+        "4. Buat wujud fisik kecil (Part) di tanah dengan ProximityPrompt ActionText = 'Ambil'.\n"
+        "5. Saat dipungut: hapus dari workspace, tambah ke inventory via RemoteEvent ke server.\n"
+        "6. CollectionService.AddTag(part, 'WorldItem') untuk tracking.\n"
+        "7. CanCollide = false pada item, Anchored = false (bisa jatuh ke tanah).\n"
+        "8. Fungsi spawn wajib seperti ini:\n"
+        "   local function spawnMaterial(itemName: string, pos: Vector3, amount: number)\n"
+        "       for i = 1, amount do\n"
+        "           local part = Instance.new('Part')\n"
+        "           part.Name = itemName\n"
+        "           part.Size = Vector3.new(0.5, 0.5, 0.5)\n"
+        "           part.CanCollide = false\n"
+        "           part.Position = pos + Vector3.new(math.random(-2,2), 1, math.random(-2,2))\n"
+        "           local prompt = Instance.new('ProximityPrompt')\n"
+        "           prompt.ActionText = 'Ambil'\n"
+        "           prompt.ObjectText = itemName\n"
+        "           prompt.Parent = part\n"
+        "           part.Parent = workspace\n"
+        "       end\n"
+        "   end\n"
+    ),
+
+    "MODERN_WEAPON": (
+        "[KATEGORI: SENJATA API MODERN - ASSAULT RIFLE/SNIPER]\n"
+        "Anda sedang membuat Senjata Api yang MENEMBAKKAN PELURU FISIK via Raycast.\n"
+        "HUKUM MODERN WEAPON (MUTLAK):\n"
+        "1. HARAM memiliki variabel BaseDamage! Damage ditentukan oleh AMMUNITION_CALIBER modul.\n"
+        "2. WAJIB: local CompatibleCaliber: string = '5.56x45mm'\n"
+        "3. WAJIB: local FireRate: number = 750  -- RPM\n"
+        "4. WAJIB: local Recoil: number = 0.3\n"
+        "5. WAJIB Recipe: local Recipe = {['Iron Ingot'] = 5, ['Wood'] = 2}\n"
+        "6. local ItemCategory: string = 'Weapon'\n"
+        "7. Mekanisme tembak: Tool.Activated → Raycast dari kamera ke arah depan.\n"
+        "8. HitboxSeparation: buat Part transparan CanCollide=true sebagai hitbox.\n"
+        "9. VisualEquip: WeldConstraint senjata ke RightHand karakter saat diequip.\n"
+        "10. ProximityPrompt di tanah dengan ActionText = 'Equip'.\n"
+    ),
+
+    "FANTASY_WEAPON": (
+        "[KATEGORI: SENJATA FANTASY - PEDANG/TONGKAT SIHIR]\n"
+        "Anda sedang membuat Senjata Melee atau Magic Fantasy.\n"
+        "HUKUM FANTASY WEAPON:\n"
+        "1. Melee: Tool.Activated → workspace:Raycast() atau magnitude check sekitar karakter.\n"
+        "2. Magic: buat Projectile (BasePart) bergerak menggunakan LinearVelocity atau BodyVelocity.\n"
+        "3. WAJIB Recipe: local Recipe = {['Crystal'] = 3, ['Dragon Bone'] = 1}\n"
+        "4. local ItemCategory: string = 'Weapon'\n"
+        "5. VisualEquip: WeldConstraint ke RightHand karakter.\n"
+        "6. ProximityPrompt ActionText = 'Equip'.\n"
+        "7. DILARANG: CompatibleCaliber (ini bukan senjata api).\n"
+    ),
+
+    "MODERN_ARMOR_HELMET": (
+        "[KATEGORI: ARMOR MODERN - ROMPI/HELM TAKTIS]\n"
+        "Anda sedang membuat Armor yang bisa dipakai karakter.\n"
+        "HUKUM ARMOR MODERN (MUTLAK):\n"
+        "1. local Recipe = {['Kevlar Fiber'] = 3, ['Iron Ingot'] = 2}\n"
+        "2. local Durability: number = 100\n"
+        "3. local ArmorTier: number = 3  -- nilai 1-6\n"
+        "4. local MaterialType: string = 'Ceramic'  -- atau 'Steel'\n"
+        "5. local ItemCategory: string = 'Armor'\n"
+        "6. local BasePrice: number = 2500\n"
+        "7. HitboxSeparation: Part transparan CanCollide=true sebagai hitbox.\n"
+        "8. VisualEquip: WeldConstraint armor ke UpperTorso atau Head pemain saat diequip.\n"
+        "9. ProximityPrompt ActionText = 'Gunakan'.\n"
+    ),
+
+    "FANTASY_ARMOR_HELMET": (
+        "[KATEGORI: ARMOR FANTASY - ZIRAH/JUBAH KSATRIA]\n"
+        "Anda sedang membuat Armor Fantasy yang bisa dipakai karakter.\n"
+        "HUKUM ARMOR FANTASY (MUTLAK):\n"
+        "1. local Recipe = {['Dragon Scale'] = 5, ['Mithril Ingot'] = 3}\n"
+        "2. local Durability: number = 100\n"
+        "3. local ArmorTier: number = 4\n"
+        "4. local MaterialType: string = 'Mithril'  -- atau 'Leather', 'Dragonscale'\n"
+        "5. local ItemCategory: string = 'Armor'\n"
+        "6. local BasePrice: number = 5000\n"
+        "7. HitboxSeparation + VisualEquip: WeldConstraint ke UpperTorso atau Head.\n"
+        "8. ProximityPrompt ActionText = 'Gunakan'.\n"
+    ),
+
+    "AMMUNITION_CALIBER": (
+        "[KATEGORI: AMUNISI - KALIBER PELURU]\n"
+        "Anda sedang membuat modul data Amunisi (mirip Arena Breakout).\n"
+        "HUKUM BALISTIK (MUTLAK):\n"
+        "1. DILARANG keras memiliki Recipe, Durability, ArmorTier.\n"
+        "2. WAJIB: local BaseDamage: number = 35\n"
+        "3. WAJIB: local PenetrationLevel: number = 3  -- nilai 1-6\n"
+        "4. local ItemCategory: string = 'Ammunition'\n"
+        "5. local BasePrice: number = 200\n"
+        "6. Buat wujud fisik kotak amunisi (Part kecil) dengan ProximityPrompt ActionText = 'Ambil'.\n"
+        "7. Anchored = false, CanCollide = false.\n"
+        "8. Tabel kaliber yang harus ada: '5.56x45mm', '7.62x39mm', '9mm', '.308 Win', '12 gauge'.\n"
+    ),
+
+    "CORE_INVENTORY_SYSTEM": (
+        "[KATEGORI: INVENTORY SYSTEM - CUSTOM EXTRACTION]\n"
+        "Anda sedang membuat Sistem Inventory TANPA Backpack bawaan Roblox.\n"
+        "HUKUM INVENTORY (MUTLAK):\n"
+        "1. DILARANG StarterGear atau Backpack bawaan Roblox.\n"
+        "2. 3 Kompartemen (tabel server per-player):\n"
+        "   - MainBackpack: HILANG SEMUA saat mati.\n"
+        "   - SafeContainer: TIDAK hilang saat mati (maks 3 slot).\n"
+        "   - LobbyStorage: Gudang permanen, TIDAK bisa dibawa ke arena.\n"
+        "3. DataStoreService wajib untuk SafeContainer dan LobbyStorage.\n"
+        "4. Players.PlayerAdded:Connect() → pcall(DataStore:GetAsync()) untuk load.\n"
+        "5. Players.PlayerRemoving:Connect() → pcall(DataStore:SetAsync()) untuk save.\n"
+        "6. Saat Humanoid.Died: hapus semua MainBackpack, pertahankan SafeContainer.\n"
+        "7. Kirim state inventory ke client via RemoteEvent saat ada perubahan.\n"
+    ),
+
+    "NPC_TRADER": (
+        "[KATEGORI: NPC TRADER - PEDAGANG HIDUP]\n"
+        "Anda sedang membuat NPC Trader yang AKTIF bergerak (bukan patung statis).\n"
+        "HUKUM NPC TRADER (MUTLAK):\n"
+        "1. Pasang alat kerja di tangan NPC via WeldConstraint:\n"
+        "   Blacksmith → Palu di RightHand. Woodworker → Gergaji. Gunsmith → Kunci Inggris.\n"
+        "2. Harga Jual = BasePrice * 2.0. Harga Beli dari Pemain = BasePrice * 0.4.\n"
+        "3. ProximityPrompt ActionText = 'Buka Toko' untuk interaksi.\n"
+        "4. Saat dipicu → FireClient ke pemain untuk buka UI Shop.\n"
+        "5. Server validasi transaksi via RemoteFunction (ZERO-TRUST: typeof() semua argumen).\n"
+        "6. 8 NPC terspesialisasi: Blacksmith, Woodworker, Stonemason, Gunsmith, Medic, Chef, Scientist, Black Market.\n"
+    ),
+
+    "LOBBY_SPACESHIP": (
+        "[KATEGORI: LOBBY PESAWAT LUAR ANGKASA]\n"
+        "Lobby ini ada di LUAR ANGKASA (Y = 10000+). BUKAN di bumi.\n"
+        "HUKUM FISIKA LOBBY (MUTLAK):\n"
+        "1. DILARANG KERAS workspace:Raycast() ke tanah. Tidak ada tanah di angkasa!\n"
+        "2. DILARANG: workspace.Terrain.\n"
+        "3. Bangun pesawat dengan Instance.new('Part') di posisi Y = 10000.\n"
+        "4. Semua lantai/dinding: CanCollide = true, Anchored = true.\n"
+        "5. Teleport pemain ke Y=10000+ saat PlayerAdded.\n"
+        "6. Tambahkan Lighting gelap dan Atmosphere untuk nuansa luar angkasa.\n"
+    ),
+
+    "FURNITURE": (
+        "[KATEGORI: FURNITUR LOBBY PESAWAT]\n"
+        "Furnitur ini ADA DI DALAM LOBBY PESAWAT (Y=10000+). Bukan di bumi!\n"
+        "HUKUM FURNITUR (MUTLAK):\n"
+        "1. DILARANG KERAS workspace:Raycast() ke bawah. Tidak ada tanah di sini.\n"
+        "2. Posisi furnitur relatif terhadap lantai pesawat (Y=10000+).\n"
+        "3. HitboxSeparation: Part transparan CanCollide=true sebagai hitbox.\n"
+        "4. Anchored = true, CanCollide = true pada hitbox.\n"
+        "5. Warna WAJIB neon/cerah: BrickColor.new('Bright white') atau neon colors.\n"
+    ),
+
+    "CORE_WORLD_GENERATION": (
+        "[KATEGORI: PROCEDURAL WORLD GENERATION]\n"
+        "Anda men-generate dunia secara prosedural.\n"
+        "HUKUM PENEMPATAN AKURAT (MUTLAK):\n"
+        "1. Baseplate berukuran 2048x64x2048 Parts.\n"
+        "2. Setiap objek di-Raycast ke bawah sebelum diletakkan:\n"
+        "   local params = RaycastParams.new()\n"
+        "   params.FilterType = Enum.RaycastFilterType.Include\n"
+        "   params.FilterDescendantsInstances = {workspace.Terrain}\n"
+        "   local hit = workspace:Raycast(Vector3.new(x,1000,z), Vector3.new(0,-2000,0), params)\n"
+        "   if hit then part.Position = hit.Position + Vector3.new(0, part.Size.Y/2, 0) end\n"
+        "3. Semua BasePart: CanCollide = true, Anchored = true.\n"
+        "4. DILARANG: floating objects tanpa Raycast ke tanah.\n"
+        "5. Warna neon/cerah sesuai bioma.\n"
+    ),
+
+    "BIOME_SYSTEM": (
+        "[KATEGORI: BIOME SYSTEM - EKOSISTEM]\n"
+        "Anda membuat sistem Bioma (Hutan, Desert, Snow, Ocean).\n"
+        "HUKUM HITBOX SEPARATION (MUTLAK):\n"
+        "1. Saat generate Pohon/Batu: WAJIB Hitbox Separation:\n"
+        "   - Part transparan (Transparency=1) CanCollide=true = hitbox.\n"
+        "   - MeshPart visual CanCollide=false.\n"
+        "2. RaycastParams sebelum meletakkan objek (cegah floating).\n"
+        "3. FilterDescendantsInstances exclude objek sejenis.\n"
+        "4. CollectionService.AddTag(treePart, 'Tree') untuk setiap pohon.\n"
+        "5. CollectionService.AddTag(rockPart, 'Rock') untuk setiap batu.\n"
+        "6. Warna unik per bioma: Hutan=Neon Hijau, Desert=Oranye, Snow=Biru muda, Ocean=Biru.\n"
+    ),
+
+    "DAY_NIGHT_CYCLE": (
+        "[KATEGORI: DAY/NIGHT CYCLE]\n"
+        "Anda membuat siklus siang-malam.\n"
+        "HUKUM SIKLUS:\n"
+        "1. local Lighting = game:GetService('Lighting')\n"
+        "2. local RunService = game:GetService('RunService')\n"
+        "3. local TweenService = game:GetService('TweenService')\n"
+        "4. Update ClockTime via RunService.Heartbeat:Connect() (BUKAN while true do).\n"
+        "5. Siang (6-18): Brightness=2, FogEnd=1000. Malam (18-24 & 0-6): Brightness=0.1, FogEnd=100.\n"
+        "6. TweenService untuk transisi mulus.\n"
+        "7. Expose BindableEvent 'TimeChanged' agar Monster AI bisa membaca waktu.\n"
+    ),
+
+    "WEATHER_DISASTER": (
+        "[KATEGORI: WEATHER SYSTEM]\n"
+        "Anda membuat cuaca ekstrem (Hujan, Badai Pasir, Salju).\n"
+        "HUKUM CUACA:\n"
+        "1. Hujan: ParticleEmitter biru di atas pemain, Lighting.FogEnd = 50.\n"
+        "2. Badai Pasir: FogColor oranye/cokelat, FogEnd = 30.\n"
+        "3. Salju: ParticleEmitter putih, FogEnd = 70.\n"
+        "4. TweenService untuk transisi mulus.\n"
+        "5. Random cuaca setiap 5-10 menit via task.wait().\n"
+        "6. RemoteEvent broadcast ke client saat cuaca berubah.\n"
+    ),
+
+    "SMELTING_FURNACE": (
+        "[KATEGORI: SMELTING FURNACE]\n"
+        "Anda membuat Mesin Peleburan Logam di Lobby Pesawat.\n"
+        "HUKUM SMELTING:\n"
+        "1. Buat Part 3D Furnace di posisi dalam Lobby (Y=10000+).\n"
+        "2. ProximityPrompt ActionText = 'Lebur Logam'.\n"
+        "3. Saat diaktifkan: cek inventory pemain via RemoteFunction.\n"
+        "4. Jika ada 'Iron Ore': hapus dari inventory, jalankan ParticleEmitter api.\n"
+        "5. task.wait(3) untuk simulasi proses.\n"
+        "6. Setelah selesai: spawn 'Iron Ingot' dengan ProximityPrompt 'Ambil'.\n"
+        "7. ZERO-TRUST: typeof() check semua argumen dari client.\n"
+    ),
+
+    "RESOURCE_NODE_MANAGER": (
+        "[KATEGORI: RESOURCE NODE MANAGER]\n"
+        "Anda membuat sistem manajemen HP untuk Pohon dan Batu.\n"
+        "HUKUM NODE:\n"
+        "1. Scan CollectionService:GetTagged('Tree') dan GetTagged('Rock').\n"
+        "2. Setiap node punya IntValue 'Health' = 100.\n"
+        "3. Event listener: saat Health berubah, cek apakah <= 0.\n"
+        "4. Jika <= 0: Destroy() node, spawn RAW_MATERIAL_ITEM di posisinya.\n"
+        "5. Kayu untuk Tree. Besi Mentah/Batu untuk Rock.\n"
+        "6. Respawn node baru di posisi sama setelah 30 detik.\n"
+        "7. DILARANG script per-node. Gunakan SATU script server yang mengatur semua node.\n"
+    ),
+
+    "ITEM_CATEGORY_DATABASE": (
+        "[KATEGORI: ITEM DATABASE - MODULE SCRIPT]\n"
+        "Anda membuat ModuleScript sentral di ReplicatedStorage.\n"
+        "HUKUM DATABASE:\n"
+        "1. Ini adalah ModuleScript (bukan Script atau LocalScript).\n"
+        "2. Return tabel yang bisa di-require:\n"
+        "   return {\n"
+        "       Weapon = {MaxStack=1, CanEquip=true, IsConsumable=false, Encumbrance=3},\n"
+        "       Ammunition = {MaxStack=60, CanEquip=false, IsConsumable=true, Encumbrance=1},\n"
+        "       Armor = {MaxStack=1, CanEquip=true, IsConsumable=false, Encumbrance=4},\n"
+        "       Medical = {MaxStack=5, CanEquip=false, IsConsumable=true, Encumbrance=1},\n"
+        "       Material = {MaxStack=20, CanEquip=false, IsConsumable=false, Encumbrance=1},\n"
+        "       Valuable = {MaxStack=10, CanEquip=false, IsConsumable=false, Encumbrance=2},\n"
+        "       Bait = {MaxStack=10, CanEquip=false, IsConsumable=true, Encumbrance=1},\n"
+        "       Tool = {MaxStack=1, CanEquip=true, IsConsumable=false, Encumbrance=2},\n"
+        "   }\n"
+        "3. Tambahkan fungsi getCategory(itemName: string): string.\n"
+    ),
+
+    "CORE_MISSION_SYSTEM": (
+        "[KATEGORI: MISSION SYSTEM]\n"
+        "Anda membuat Sistem Quest Harian dan Event Mingguan.\n"
+        "HUKUM MISI:\n"
+        "1. DataStoreService untuk progress misi per player.\n"
+        "2. Misi Harian reset setiap 24 jam (os.time() tracking).\n"
+        "3. Setiap misi: {Id, Title, Description, Type='Kill'/'Gather'/'Craft', Target, Amount, Reward}.\n"
+        "4. Saat selesai: kirim reward ke Inbox pemain via InboxService.\n"
+        "5. PlayerAdded: load misi dari DataStore via pcall().\n"
+        "6. RemoteEvent broadcast progress ke client.\n"
+    ),
+
+    "CORE_MONETIZATION_SYSTEM": (
+        "[KATEGORI: MONETIZATION - PEMBAYARAN ROBUX]\n"
+        "Anda membuat sistem pembelian Robux. HUKUM ANTI-P2W MUTLAK:\n"
+        "1. MarketplaceService.ProcessReceipt HANYA di SATU skrip ini.\n"
+        "2. DILARANG jual: Sword, Gun, Armor, Weapon.\n"
+        "3. Yang boleh dijual: Cosmetic, Extra Slot, XP Boost, Currency.\n"
+        "4. pcall() untuk semua DataStore di dalam ProcessReceipt.\n"
+        "5. return Enum.ProductPurchaseDecision.PurchaseGranted setelah berhasil.\n"
+        "6. Simpan receipt ID ke DataStore untuk cegah double-purchase.\n"
+    ),
+
+    "AUDIO_SYSTEM": (
+        "[KATEGORI: AUDIO SYSTEM - BGM DAN SFX]\n"
+        "Anda membuat sistem audio client (LocalScript di StarterPlayerScripts).\n"
+        "HUKUM AUDIO:\n"
+        "1. ContentProvider:PreloadAsync() untuk semua Sound sebelum play.\n"
+        "2. BGM: loop=true, Volume=0.3, fade in/out via TweenService.\n"
+        "3. SFX: loop=false, Volume=0.7.\n"
+        "4. Dengarkan RemoteEvent dari server untuk ganti BGM.\n"
+        "5. ANTI-MEMORY LEAK: simpan semua koneksi event ke variabel.\n"
+    ),
+
+    "CORE_INBOX_SYSTEM": (
+        "[KATEGORI: INBOX SYSTEM - KOTAK MASUK]\n"
+        "Anda membuat Sistem Kotak Masuk player.\n"
+        "HUKUM INBOX:\n"
+        "1. DataStoreService per player untuk list messages/items.\n"
+        "2. Format item inbox: {Id=string, Type='item'/'reward', Content=string, ExpiresAt=number}.\n"
+        "3. Claim item: pindah ke SafeContainer atau LobbyStorage.\n"
+        "4. Expired items hapus saat join (cek os.time()).\n"
+        "5. PlayerAdded: load dari DataStore via pcall().\n"
+        "6. PlayerRemoving: save ke DataStore via pcall().\n"
+    ),
+
+    "FLEA_MARKET_BACKEND": (
+        "[KATEGORI: FLEA MARKET BACKEND]\n"
+        "Anda membuat Backend Server pasar jual beli antar pemain.\n"
+        "HUKUM FLEA MARKET:\n"
+        "1. RemoteFunction (bukan RemoteEvent) untuk transaksi.\n"
+        "2. pcall() untuk semua DataStore.\n"
+        "3. ZERO-TRUST: typeof() dan range check semua argumen dari client.\n"
+        "4. Listing: {Id, SellerId, ItemName, Quantity, Price, CreatedAt}.\n"
+        "5. Saat beli: kurangi currency pembeli, tambah currency penjual via Inbox.\n"
+        "6. Cegah self-purchase: if listing.SellerId == buyer.UserId then reject.\n"
+        "7. OrderedDataStore untuk sort listing by harga.\n"
+    ),
+}
+
+# ============================================================
+# QUERY RAG YANG LEBIH SPESIFIK PER KATEGORI TASK
+# ============================================================
+TASK_RAG_QUERIES: dict = {
+    "GATHERING_TOOLS": "roblox luau tool activated raycast axe pickaxe CollectionService IntValue harvest",
+    "MONSTER": "roblox PathfindingService NPC AI monster combat strict luau waypoint",
+    "RAW_MATERIAL_ITEM": "roblox luau item drop spawn ProximityPrompt ground pickup CollectionService",
+    "MODERN_WEAPON": "roblox luau gun firearm raycast bullet tool activated recoil strict server",
+    "FANTASY_WEAPON": "roblox luau sword melee magic projectile LinearVelocity tool activated strict",
+    "MODERN_ARMOR_HELMET": "roblox luau armor weld UpperTorso character equip ProximityPrompt strict",
+    "FANTASY_ARMOR_HELMET": "roblox luau armor fantasy weld equip character strict luau",
+    "AMMUNITION_CALIBER": "roblox luau ammunition bullet caliber damage penetration ModuleScript strict",
+    "CORE_INVENTORY_SYSTEM": "roblox luau inventory extraction game datastore PlayerAdded PlayerRemoving strict",
+    "CORE_INBOX_SYSTEM": "roblox luau mailbox inbox datastore player message reward claim strict",
+    "NPC_TRADER": "roblox luau NPC trader shop ProximityPrompt RemoteFunction weld constraint server",
+    "LOBBY_SPACESHIP": "roblox luau lobby floating Part anchored CanCollide strict no raycast",
+    "FURNITURE": "roblox luau furniture Part anchored hitbox separation no raycast strict",
+    "SMELTING_FURNACE": "roblox luau crafting smelting ProximityPrompt ParticleEmitter task wait strict",
+    "CORE_MISSION_SYSTEM": "roblox luau quest mission datastore daily reset reward strict server",
+    "CORE_MONETIZATION_SYSTEM": "roblox luau MarketplaceService ProcessReceipt datastore strict receipt",
+    "AUDIO_SYSTEM": "roblox luau Sound BGM SFX TweenService ContentProvider PreloadAsync strict",
+    "CORE_WORLD_GENERATION": "roblox luau procedural terrain generation raycast baseplate anchored strict",
+    "BIOME_SYSTEM": "roblox luau biome system CollectionService tag tree rock raycast hitbox strict",
+    "DAY_NIGHT_CYCLE": "roblox luau day night Lighting ClockTime TweenService RunService Heartbeat strict",
+    "WEATHER_DISASTER": "roblox luau weather rain storm fog Lighting ParticleEmitter TweenService strict",
+    "RESOURCE_NODE_MANAGER": "roblox luau resource node IntValue Health CollectionService respawn strict",
+    "ITEM_CATEGORY_DATABASE": "roblox luau ModuleScript item database ReplicatedStorage category return",
+    "FLEA_MARKET_BACKEND": "roblox luau trading DataStore RemoteFunction zero trust strict server",
+    "CORE_INBOX_UI": "roblox luau UI LocalScript ScreenGui Frame TextLabel RemoteEvent strict",
+    "NPC_SHOP_UI": "roblox luau shop UI LocalScript ScrollingFrame RemoteFunction strict",
+    "PLAYER_FLEA_MARKET_UI": "roblox luau flea market UI LocalScript TextBox RemoteFunction strict",
+    "CORE_MISSION_UI": "roblox luau quest UI LocalScript ScreenGui RemoteEvent strict",
+    "DAILY_LOG_SYSTEM": "roblox luau daily log DataStore timestamp player server strict",
+    "CORE_WORLD_SETTINGS": "roblox luau camera lock first person LockFirstPerson gravity Lighting strict",
+}
+
+
 class OmniSynthesizerAgent:
     def __init__(self, healer_agent: AutoHealerAgent):
         self.healer_agent = healer_agent
@@ -829,6 +1251,19 @@ class OmniSynthesizerAgent:
             comprehensive_prompt += f"[REFERENSI MODUL GLOBAL UNTUK REQUIRE()]:\n{ecosystem_context}\n\n"
         comprehensive_prompt += f"[INSTRUKSI TUGAS KHUSUS ({module_name})]:\n{task_description}\n\n"
 
+        # === INJEKSI INSTRUKSI SPESIFIK PER KATEGORI ===
+        _task_category = "_".join(module_name.split("_")[:-1]) if "_" in module_name else module_name
+        _specific_inst = TASK_SPECIFIC_INSTRUCTIONS.get(_task_category, "")
+        if _specific_inst:
+            comprehensive_prompt += (
+                f"[PANDUAN TEKNIS KHUSUS UNTUK KATEGORI '{_task_category}']:\n"
+                f"{_specific_inst}\n\n"
+            )
+            console_terminal_interface.print(
+                f"[bold magenta]  [TASK-PROMPT] Instruksi '{_task_category}' disuntikkan.[/bold magenta]"
+            )
+        # ===============================================
+
         # Injeksi wajib HitboxSeparation untuk modul yang membutuhkannya
         _needs_hitbox = (
             any(_kw in module_name.upper() for _kw in ["ARMOR", "HELMET", "WEAPON", "FURNITURE", "BIOME", "TREE", "ROCK", "BUILDING"])
@@ -862,7 +1297,12 @@ class OmniSynthesizerAgent:
         console_terminal_interface.print(
             f"[dim cyan]  🔍 Menjalankan RAG Pipeline: Membaca Kitab DevForum & Ekstrak Raw GitHub...[/dim cyan]"
         )
-        clean_task_query = LuauKnowledgeScraper._clean_task_query(module_name)
+        _rag_cat = "_".join(module_name.split("_")[:-1]) if "_" in module_name else module_name
+        clean_task_query = TASK_RAG_QUERIES.get(
+            _rag_cat,
+            LuauKnowledgeScraper._clean_task_query(module_name)
+        )
+        console_terminal_interface.print(f"[dim cyan]  RAG Query: '{clean_task_query}'[/dim cyan]")
         github_context = await LuauKnowledgeScraper.search_github_luau(clean_task_query)
 
         # Jika GitHub Code Search gagal, coba Repository Search
