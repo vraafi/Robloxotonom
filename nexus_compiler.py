@@ -233,7 +233,7 @@ class NativeLuauCompiler:
             with open(temp_path, "w", encoding="utf-8") as f:
                 f.write(luau_code)
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             
             analyze_process = await loop.run_in_executor(
                 None,
