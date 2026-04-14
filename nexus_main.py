@@ -221,14 +221,41 @@ class RobloxDeployer:
                     f"[bold green]✅ Deployment Roblox Berhasil! (Versi {version_number})[/bold green]"
                 )
                 await send_telegram_notification(
-                    f"✅ Deployment ke Roblox Server berhasil! Versi Place: {version_number}"
+                    f"✅ Deployment ke Roblox Server berhasil! Versi Place: {version_number}",
+                    important=True
                 )
             else:
-                msg = f"❌ Deployment Roblox Gagal! Status: {response.status_code}, Respon: {response.text[:200]}"
-                console_terminal_interface.print(f"[bold red]{msg}[/bold red]")
-                await send_telegram_notification(msg)
+                # ── DEPLOYMENT GAGAL: Kirim file .rbxl ke Telegram untuk upload manual ──
+                error_detail = response.text[:300] if response.text else "Tidak ada detail"
+                fail_caption = (
+                    f"❌ DEPLOYMENT ROBLOX GAGAL (Evolusi {evolution_level})\n"
+                    f"Status: {response.status_code}\n"
+                    f"Error: {error_detail}\n\n"
+                    f"📥 File ini untuk UPLOAD MANUAL ke Roblox Studio:\n"
+                    f"1. Download file .rbxl di atas\n"
+                    f"2. Buka Roblox Studio → File → Open from File\n"
+                    f"3. Publish manual via File → Publish to Roblox"
+                )
+                console_terminal_interface.print(f"[bold red]❌ [Deploy] Gagal! Status: {response.status_code}[/bold red]")
+                await send_telegram_notification(fail_caption, important=True)
+                # Kirim ulang file .rbxl dengan caption GAGAL yang jelas
+                await send_telegram_document(
+                    COMPILED_GAME_FILE,
+                    fail_caption,
+                )
         except Exception as e:
+            # ── EXCEPTION saat upload: Kirim file ke Telegram ──
+            exc_caption = (
+                f"💥 EXCEPTION saat Deployment (Evolusi {evolution_level})\n"
+                f"Error: {type(e).__name__}: {str(e)[:200]}\n\n"
+                f"📥 Upload file ini secara MANUAL ke Roblox Studio."
+            )
             console_terminal_interface.print(f"[bold red][Deploy] Exception: {e}[/bold red]")
+            try:
+                await send_telegram_notification(exc_caption, important=True)
+                await send_telegram_document(COMPILED_GAME_FILE, exc_caption)
+            except Exception:
+                pass
 
 
 def setup_rojo():
@@ -682,21 +709,43 @@ async def run_orchestrator():
                 )
 
                 if not _deploy_safe:
+                    validator_fail_msg = (
+                        "🚫 DEPLOYMENT DIBATALKAN\n"
+                        "Pre-Deployment Validator menemukan file yang tidak bisa di-generate.\n"
+                        "Periksa log VPS: tail -f nohup.out\n\n"
+                        "Kemungkinan penyebab:\n"
+                        "• Rate limit API Gemini habis\n"
+                        "• Task tertentu selalu gagal compiler check\n"
+                        "• Disk VPS penuh"
+                    )
                     console_terminal_interface.print(
                         "[bold red]🚫 DEPLOYMENT DIBATALKAN: File tidak 100% lengkap setelah regenerasi.[/bold red]"
                     )
-                    await send_telegram_notification(
-                        "🚫 DEPLOYMENT DIBATALKAN\n"
-                        "Pre-Deployment Validator menemukan file yang tidak bisa di-generate.\n"
-                        "Periksa log VPS untuk detail error.",
-                        important=True
-                    )
+                    await send_telegram_notification(validator_fail_msg, important=True)
+                    # Jika file .rbxl hasil build sebelumnya masih ada, kirim juga
+                    if os.path.exists(COMPILED_GAME_FILE):
+                        await send_telegram_document(
+                            COMPILED_GAME_FILE,
+                            f"📦 File .rbxl terakhir yang tersimpan (mungkin tidak lengkap)\n"
+                            f"JANGAN upload ke Roblox sebelum memeriksa kelengkapan file!",
+                        )
                     break
 
                 # ══════════════════════════════════════════════════════════════
                 # Semua file sudah 100% valid → lanjutkan deployment
                 # ══════════════════════════════════════════════════════════════
-                if RobloxDeployer.compile_rojo():
+                rojo_ok = RobloxDeployer.compile_rojo()
+                if not rojo_ok:
+                    # Rojo build gagal → notif Telegram + kirim src sebagai arsip
+                    rojo_fail_msg = (
+                        f"🔨 ROJO BUILD GAGAL (Evolusi {evolution_level})\n"
+                        f"File .rbxl tidak berhasil dibuat oleh Rojo.\n"
+                        f"Kemungkinan ada syntax error di file .lua.\n\n"
+                        f"Periksa log VPS: tail -f nexus_healer.log"
+                    )
+                    console_terminal_interface.print(f"[bold red]{rojo_fail_msg}[/bold red]")
+                    await send_telegram_notification(rojo_fail_msg, important=True)
+                else:
                     await healer.initialize_and_scan()
                     await RobloxDeployer.publish(evolution_level)
                 break
