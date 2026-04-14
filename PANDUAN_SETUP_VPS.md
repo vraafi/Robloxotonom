@@ -91,13 +91,46 @@ Install semua library Python yang dibutuhkan oleh seluruh file sistem Nexus.
 # Install library asinkron dan UI Terminal
 pip3 install aiohttp aiofiles rich requests python-dotenv
 
-# (Opsional) Install Aider Chat untuk bedah kode tambahan
+# (Opsional) Install Aider Chat untuk bedah kode tambahan (digunakan AutoHealerAgent)
 pip3 install aider-chat
 ```
 
 ---
 
-## Tahap 6: Persiapan File Proyek
+## Tahap 6: Instalasi Kompiler Multi-Bahasa (WAJIB untuk Nexus Polyglot /polyglot)
+
+Fitur `/polyglot` di Telegram membutuhkan kompiler untuk setiap bahasa yang didukung.
+**Install semuanya agar semua perintah /polyglot bisa berjalan tanpa BINARY NOT FOUND error.**
+
+```bash
+# ---- C & C++ ----
+sudo apt install build-essential g++ gcc -y
+
+# ---- Go (Golang) ----
+sudo apt install golang-go -y
+
+# ---- Java (OpenJDK 21) ----
+sudo apt install openjdk-21-jdk -y
+
+# ---- Lua 5.4 ----
+sudo apt install lua5.4 -y
+
+# ---- Rust (rustc via rustup - cara resmi) ----
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+
+# ---- JavaScript ----
+# Node.js sudah terinstall di Tahap 2, tidak perlu install tambahan
+
+# Verifikasi semua kompiler
+echo '=== Cek Kompiler ===' && g++ --version | head -1 && go version && java --version 2>&1 | head -1 && lua5.4 -v && rustc --version && node --version
+```
+
+> **Catatan Rust:** Setelah install via rustup, jalankan `source "$HOME/.cargo/env"` atau logout-login ulang SSH agar PATH `~/.cargo/bin` aktif secara permanen.
+
+---
+
+## Tahap 7: Persiapan File Proyek
 
 ```bash
 # Clone atau upload file proyek ke VPS Anda
@@ -107,7 +140,7 @@ cd nexus_project/
 
 ---
 
-## Tahap 7: Persiapan File Lingkungan (.env.nexus)
+## Tahap 8: Persiapan File Lingkungan (.env.nexus)
 
 File `.env.nexus` sudah disediakan di dalam folder proyek. Edit sesuai kebutuhan:
 
@@ -127,16 +160,23 @@ ROBLOX_UNIVERSE_ID="12345678"
 ROBLOX_PLACE_ID="87654321"
 ROBLOX_OPEN_CLOUD_API_KEY="kunci_open_cloud_anda"
 
-# Token Bot untuk mengirim file .rbxl ke HP Anda via Telegram
+# Token Bot untuk mengirim file .rbxl & menerima perintah /polyglot via Telegram
 TELEGRAM_BOT_TOKEN="token_bot_anda"
 TELEGRAM_CHAT_ID="@username_atau_id_chat_anda"
+
+# GitHub Personal Access Token (untuk RAG Knowledge Scraping tanpa rate-limit)
+# Buat di: https://github.com/settings/tokens -> New token -> scope: public_repo
+GITHUB_PERSONAL_ACCESS_TOKEN="ghp_token_github_anda"
+
+# (Opsional) URL ngrok untuk Roblox Studio MCP (jika pakai live playtest di Studio)
+# ROBLOX_MCP_URL="https://xxxx.ngrok-free.app"
 ```
 
 Tekan `CTRL+X`, lalu `Y`, lalu `Enter` untuk menyimpan.
 
 ---
 
-## Tahap 8: Jalankan dengan Tmux (Mode 24/7)
+## Tahap 9: Jalankan dengan Tmux (Mode 24/7)
 
 Karena AI diberikan waktu berpikir hingga 30 Menit per tugas, **wajib menggunakan tmux** agar proses tidak terbunuh saat koneksi internet terputus.
 
@@ -166,10 +206,10 @@ tmux attach -t nexus_ai
 
 ## Catatan Penting
 
-- **Model Utama:** Gemma 4 31B IT (`models/gemma-4-31b-it`) — 1.500 RPD per API Key
+- **Model Utama:** Gemma 4 31B IT (`models/gemma-4-31b-it`) -- 1.500 RPD per API Key
 - **Fallback 1:** Gemma 4 26B A4B IT (`models/gemma-4-26b-a4b-it`)
-- **Fallback 2:** Gemini 3.1 Flash Lite Preview (`models/gemini-3.1-flash-lite-preview`) — 500 RPD
+- **Fallback 2:** Gemini 3.1 Flash Lite Preview (`models/gemini-3.1-flash-lite-preview`) -- 500 RPD
 - **Fallback Terakhir:** Gemini 2.0 Flash (`models/gemini-2.0-flash`)
-- **JANGAN** menggunakan Gemini 2.5 Flash (hanya 20 RPD, akan langsung kena rate limit!)
+- **JANGAN** menggunakan Gemini 2.5 Flash atau Gemini 2.5 Pro (RPD sangat rendah, langsung kena rate limit!)
 - Sistem secara otomatis melakukan rotasi antar 10 API Key untuk menghindari rate limit
 - Saat rate limit terdeteksi, sistem otomatis menunggu 60 detik sebelum mencoba lagi
