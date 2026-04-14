@@ -173,13 +173,40 @@ HELP_TEXT = (
     "- Auto-install compiler jika belum ada (tanpa perlu tanya)\n"
     "- Sandbox PERSISTEN per task (tidak dihapus otomatis)\n"
     "- Setelah 5x gagal: meminta instruksi tambahan (tanpa batas waktu)\n"
-    "- Kirim /clearcache untuk reset semua sandbox"
+    "- Kirim /clearcache untuk reset semua sandbox\n\n"
+    "<b>Tips:</b> Tidak perlu tulis /polyglot!\n"
+    "Cukup kirim deskripsi tugasmu dan sistem akan mendeteksi bahasanya otomatis."
 )
 
 
 # ============================================================
 # UTILITY FUNCTIONS
 # ============================================================
+
+def _detect_language_from_text(text: str) -> Optional[str]:
+    """
+    Deteksi bahasa pemrograman dari kalimat natural language.
+    Dipanggil saat perintah tidak sesuai format /polyglot.
+    """
+    t = text.lower()
+    signals = [
+        ("python",     ["python", " py ", "django", "flask", "pandas", "numpy", "pip install"]),
+        ("javascript", ["javascript", " js ", "nodejs", "node.js", "npm ", "react", "vue"]),
+        ("typescript", ["typescript", " ts ", " tsx"]),
+        ("cpp",        ["c++", " cpp", "g++", "cplusplus"]),
+        ("c",          [" bahasa c ", " kode c ", " gcc ", " in c "]),
+        ("rust",       ["rust", "cargo", "rustc"]),
+        ("go",         ["golang", "goroutine", " go "]),
+        ("java",       [" java ", "jvm", "maven", "spring boot"]),
+        ("lua",        ["lua", "luau", "roblox script", "roblox lua"]),
+        ("bash",       ["bash", "shell script", " sh ", "linux command", "terminal"]),
+    ]
+    for lang, kws in signals:
+        for kw in kws:
+            if kw in t:
+                return lang
+    return None
+
 
 def _resolve_language(raw_lang: str) -> Optional[str]:
     raw = raw_lang.lower().strip()
@@ -847,11 +874,21 @@ class TelegramPolyglotListener:
         elif text.startswith("/help") or text.startswith("/start"):
             await self._send(chat_id, HELP_TEXT)
         else:
-            await self._send(
-                chat_id,
-                f"Perintah tidak dikenal: <code>{text[:50]}</code>\n"
-                "Ketik /help untuk panduan."
-            )
+            # Coba deteksi bahasa dari natural language
+            detected = _detect_language_from_text(text)
+            if detected:
+                await self._send(chat_id, f"Terdeteksi bahasa: <b>{detected}</b> — memproses...")
+                await self._handle_polyglot(chat_id, f"/polyglot {detected} {text}")
+            else:
+                await self._send(
+                    chat_id,
+                    "Tidak perlu /polyglot! Cukup tulis deskripsinya, contoh:\n"
+                    "<code>buat fungsi python fibonacci</code>\n"
+                    "<code>rust HTTP client dengan error handling</code>\n"
+                    "<code>script bash untuk backup folder</code>\n\n"
+                    "Atau: <code>/polyglot [bahasa] [deskripsi]</code>\n"
+                    "Ketik /help untuk panduan."
+                )
 
     async def _handle_polyglot(self, chat_id: str, text: str):
         parts = text.split(maxsplit=2)
@@ -868,13 +905,22 @@ class TelegramPolyglotListener:
 
         language = _resolve_language(raw_lang)
         if not language:
-            supported = ", ".join(sorted(LANGUAGE_CONFIG.keys()))
-            await self._send(
-                chat_id,
-                f"Bahasa '<code>{raw_lang}</code>' tidak didukung.\n"
-                f"Tersedia: <code>{supported}</code>"
-            )
-            return
+            # Fallback: coba deteksi dari seluruh teks pesan
+            full_msg = " ".join(parts[1:])
+            language = _detect_language_from_text(full_msg)
+            if language:
+                task_desc = full_msg
+                await self._send(chat_id, f"Terdeteksi bahasa: <b>{language}</b> — memproses...")
+            else:
+                supported = ", ".join(sorted(LANGUAGE_CONFIG.keys()))
+                await self._send(
+                    chat_id,
+                    f"Bahasa '<code>{raw_lang}</code>' tidak dikenali.\n"
+                    f"Coba tulis nama bahasa dengan jelas, contoh:\n"
+                    f"<code>/polyglot python buat fungsi sorting</code>\n\n"
+                    f"Bahasa tersedia: <code>{supported}</code>"
+                )
+                return
 
         # Buat task_id baru untuk setiap request (sandbox baru)
         task_id = uuid.uuid4().hex
