@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import re
 import os
@@ -19,7 +20,6 @@ from nexus_config import (
     console_terminal_interface,
     TEMP_IO_DIRECTORY,
     ACTIVE_AGENTS,
-    APIKeyRotator,
     GEMINI_CLI_PATH,
     ROBLOX_MCP_URL,
 )
@@ -91,7 +91,7 @@ class RobloxMCPBridge:
             except Exception as e:
                 return f"MCP_CONNECTION_FAILED: Pastikan ngrok aktif di PC Lokal Anda. Detail: {str(e)}"
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _post)
 
 
@@ -140,7 +140,7 @@ class LuauKnowledgeScraper:
 
             command = ["curl", "-s", "--max-time", "15"] + headers_list + [url]
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             proses = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
@@ -231,7 +231,7 @@ class LuauKnowledgeScraper:
 
             command = ["curl", "-s", "--max-time", "15"] + headers_list + [url]
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             proses = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
@@ -267,7 +267,6 @@ class LuauKnowledgeScraper:
                 if readme_proses.returncode == 0 and readme_proses.stdout:
                     try:
                         readme_data = json.loads(readme_proses.stdout)
-                        import base64
                         content_b64 = readme_data.get("content", "")
                         if content_b64:
                             readme_text = base64.b64decode(
@@ -319,7 +318,7 @@ class LuauKnowledgeScraper:
 
             command = ["curl", "-s", "--max-time", "15"] + headers_list + [url]
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             proses = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
@@ -362,7 +361,7 @@ class LuauKnowledgeScraper:
                 "-H", "User-Agent: NexusAgent/2.0",
                 url,
             ]
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             proses = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
@@ -412,7 +411,7 @@ class LuauKnowledgeScraper:
                 "-H", "User-Agent: NexusAgent/2.0",
                 url,
             ]
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             proses = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(command, capture_output=True, text=True, timeout=20),
@@ -927,7 +926,12 @@ class OmniSynthesizerAgent:
 
                 code_attempt = healed_code
 
-            os.makedirs(os.path.dirname(target_filepath), exist_ok=True)
+            # Guard: pastikan target_filepath tidak kosong sebelum makedirs
+            if not target_filepath:
+                return False, "TARGET_FILEPATH_KOSONG: Tidak bisa menyimpan file tanpa path.", code_attempt
+            parent_dir = os.path.dirname(target_filepath)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
             with open(target_filepath, "w", encoding="utf-8") as f:
                 f.write(code_attempt)
 
