@@ -623,6 +623,82 @@ class RojoBuildAutoHealer:
                             pass
         return fix_count
 
+
+    @staticmethod
+    def fix_all_rbxmx_files() -> int:
+        """
+        Scan dan perbaiki SEMUA file .rbxmx di project Rojo.
+        Dalam format XML Roblox, <token> adalah tag untuk tipe Enum, sedangkan
+        DisplayOrder wajib menggunakan tag <int> (Int32).
+        Bug umum: generator menggunakan <token name="DisplayOrder"> padahal
+        Rojo mengharapkan <int name="DisplayOrder">.
+        """
+        INT32_RBXMX_PROPS = {"DisplayOrder", "ZIndex", "LayoutOrder", "TextSize", "BorderSizePixel"}
+        fix_count = 0
+        for root, dirs, files in os.walk(PROJECT_ROOT_DIRECTORY):
+            for fname in files:
+                if not fname.endswith(".rbxmx"):
+                    continue
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        xml_content = f.read()
+                    original = xml_content
+                    for prop in INT32_RBXMX_PROPS:
+                        xml_content = re.sub(
+                            r'<token\s+name="' + re.escape(prop) + r'">([\d]+)</token>',
+                            '<int name="' + prop + r'">\1</int>',
+                            xml_content,
+                        )
+                    if xml_content != original:
+                        with open(fpath, "w", encoding="utf-8") as f:
+                            f.write(xml_content)
+                        fix_count += 1
+                        console_terminal_interface.print(
+                            f"[bold green][RbxmxFix] Diperbaiki: {fname}[/bold green]"
+                        )
+                except Exception:
+                    pass
+        return fix_count
+
+    @staticmethod
+    def fix_rbxmx_for_instance(instance_name: str) -> int:
+        """
+        Cari dan perbaiki file .rbxmx yang terkait dengan nama instance tertentu.
+        Dipanggil saat healer mendeteksi type_mismatch pada instance spesifik.
+        """
+        INT32_RBXMX_PROPS = {"DisplayOrder", "ZIndex", "LayoutOrder", "TextSize", "BorderSizePixel"}
+        fix_count = 0
+        search_terms = [instance_name, instance_name.lower(), instance_name.replace("_", "")]
+        for root, dirs, files in os.walk(PROJECT_ROOT_DIRECTORY):
+            for fname in files:
+                if not fname.endswith(".rbxmx"):
+                    continue
+                base = fname.replace(".rbxmx", "")
+                if not any(t.lower() in base.lower() or base.lower() in t.lower() for t in search_terms):
+                    continue
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        xml_content = f.read()
+                    original = xml_content
+                    for prop in INT32_RBXMX_PROPS:
+                        xml_content = re.sub(
+                            r'<token\s+name="' + re.escape(prop) + r'">([\d]+)</token>',
+                            '<int name="' + prop + r'">\1</int>',
+                            xml_content,
+                        )
+                    if xml_content != original:
+                        with open(fpath, "w", encoding="utf-8") as f:
+                            f.write(xml_content)
+                        fix_count += 1
+                        console_terminal_interface.print(
+                            f"[bold green][RbxmxFix] Instance fix di: {fname}[/bold green]"
+                        )
+                except Exception:
+                    pass
+        return fix_count
+
     @staticmethod
     def proactive_scan_and_fix() -> int:
         """
@@ -640,6 +716,13 @@ class RojoBuildAutoHealer:
                 f"[bold green][ProactiveFix] {json_fixes} masalah diperbaiki di file JSON metadata Rojo[/bold green]"
             )
             total_fixes += json_fixes
+
+        rbxmx_fixes = RojoBuildAutoHealer.fix_all_rbxmx_files()
+        if rbxmx_fixes > 0:
+            console_terminal_interface.print(
+                f"[bold green][ProactiveFix] {rbxmx_fixes} masalah diperbaiki di file .rbxmx Rojo[/bold green]"
+            )
+            total_fixes += rbxmx_fixes
 
         all_files = RojoBuildAutoHealer.find_all_lua_files()
         for fpath in all_files:
@@ -828,6 +911,11 @@ class RojoBuildAutoHealer:
                 if json_fixes > 0:
                     console_terminal_interface.print(
                         f"[bold green][RojoBuildHealer] ✅ JSON metadata fix berhasil ({json_fixes} file): {file_name}[/bold green]"
+                    )
+                rbxmx_fixes = RojoBuildAutoHealer.fix_rbxmx_for_instance(file_name)
+                if rbxmx_fixes > 0:
+                    console_terminal_interface.print(
+                        f"[bold green][RojoBuildHealer] ✅ RBXMX fix berhasil ({rbxmx_fixes} file): {file_name}[/bold green]"
                     )
 
             # ── LANGKAH 1: Cari file Lua ─────────────────────────────────────────
