@@ -744,6 +744,7 @@ async def run_orchestrator():
             if failed_tasks:
                 _evo_summary += "\n\n📋 Task gagal:\n" + "\n".join(failed_tasks[:5])
             await send_telegram_notification(_evo_summary, important=True)
+            console_terminal_interface.print(
                 f"\n[bold magenta]Siklus {generation_counter} Selesai. "
                 f"Berhasil: {tasks_done}/{total_tasks}, Gagal: {tasks_failed}/{total_tasks}. "
                 f"Sinkronisasi File...[/bold magenta]"
