@@ -40,6 +40,8 @@ from nexus_config import (
     GEMINI_CLI_PATH,
     ACTIVE_AGENTS,
     TEMP_IO_DIRECTORY,
+    SOURCE_CODE_DIRECTORY,
+    COMPILED_GAME_FILE,
 )
 from nexus_healer import ApexKeyRotator
 
@@ -746,6 +748,7 @@ class PolyglotSynthesizerAgent:
 _pending_clarifications: dict = {}   # chat_id -> asyncio.Future
 _pending_instructions: dict = {}     # chat_id -> asyncio.Future (no timeout)
 _active_tasks: dict = {}             # chat_id -> task_id (task yang sedang berjalan)
+_roblox_state: dict = {}             # chat_id -> {"step": str, "pending_tasks": list}
 
 
 class TelegramPolyglotListener:
@@ -768,7 +771,7 @@ class TelegramPolyglotListener:
         params = {
             "offset": self.last_update_id + 1,
             "timeout": 30,
-            "allowed_updates": ["message"],
+            "allowed_updates": ["message", "callback_query"],
         }
         try:
             loop = asyncio.get_running_loop()
@@ -838,6 +841,20 @@ class TelegramPolyglotListener:
             _pending_instructions.pop(self.master_chat_id, None)
 
     async def _handle_update(self, update: dict):
+        # ── CALLBACK QUERY (tombol inline keyboard) ──────────────────
+        if "callback_query" in update:
+            cb = update["callback_query"]
+            cb_id = cb.get("id", "")
+            cb_data = cb.get("data", "")
+            cb_chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+            cb_msg_id = cb.get("message", {}).get("message_id")
+            if cb_chat_id == self.master_chat_id:
+                await self._answer_callback(cb_id)
+                await self._handle_callback(cb_chat_id, cb_data, cb_msg_id)
+            else:
+                await self._answer_callback(cb_id, "Akses ditolak.")
+            return
+
         message = update.get("message", {})
         chat_id = str(message.get("chat", {}).get("id", ""))
         text = (message.get("text") or "").strip()
@@ -864,6 +881,12 @@ class TelegramPolyglotListener:
                 fut.set_result(text)
                 return
 
+        # Priority 3: Cek Roblox AI mode (sedang menunggu input bug/fitur)
+        roblox_st = _roblox_state.get(chat_id, {})
+        if roblox_st.get("step") in ("waiting_bug", "waiting_feature"):
+            await self._handle_roblox_report(chat_id, text, roblox_st["step"])
+            return
+
         # Command routing
         if text.startswith("/polyglot"):
             await self._handle_polyglot(chat_id, text)
@@ -871,8 +894,10 @@ class TelegramPolyglotListener:
             await self._handle_status(chat_id)
         elif text.startswith("/clearcache"):
             await self._handle_clearcache(chat_id)
-        elif text.startswith("/help") or text.startswith("/start"):
+        elif text.startswith("/help"):
             await self._send(chat_id, HELP_TEXT)
+        elif text.startswith("/start") or text.startswith("/menu"):
+            await self._handle_start(chat_id)
         else:
             # Langkah 1: Cek keyword bahasa secara cepat (tanpa API call)
             detected = _detect_language_from_text(text)
@@ -1037,6 +1062,562 @@ class TelegramPolyglotListener:
         console_terminal_interface.print(
             f"[bold cyan][Polyglot] /clearcache: {deleted_count} sandbox dihapus.[/bold cyan]"
         )
+
+    # ================================================================
+    # NEXUS UNIFIED MENU — 2 MODE
+    # ================================================================
+
+    async def _send_keyboard(self, chat_id: str, text: str, keyboard: list) -> Optional[int]:
+        """
+        Kirim pesan dengan inline keyboard via raw HTTP.
+        keyboard: [[{"text": "label", "callback_data": "data"}, ...], ...]
+        Return: message_id atau None
+        """
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": keyboard},
+        }
+        try:
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(
+                None,
+                lambda: requests.post(url, json=payload, timeout=15),
+            )
+            data = res.json()
+            return data.get("result", {}).get("message_id")
+        except Exception as e:
+            console_terminal_interface.print(f"[dim yellow][Bot] _send_keyboard error: {e}[/dim yellow]")
+            return None
+
+    async def _answer_callback(self, callback_query_id: str, text: str = "") -> None:
+        """Jawab callback query agar loading spinner hilang di Telegram."""
+        url = f"https://api.telegram.org/bot{self.bot_token}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: requests.post(url, json=payload, timeout=10),
+            )
+        except Exception:
+            pass
+
+    async def _edit_message(self, chat_id: str, message_id: int, text: str, keyboard: Optional[list] = None) -> None:
+        """Edit pesan yang sudah ada (update status board real-time)."""
+        url = f"https://api.telegram.org/bot{self.bot_token}/editMessageText"
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+        }
+        if keyboard:
+            payload["reply_markup"] = {"inline_keyboard": keyboard}
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: requests.post(url, json=payload, timeout=15),
+            )
+        except Exception:
+            pass
+
+    def _main_menu_keyboard(self) -> list:
+        return [
+            [{"text": "🤖 AI Agent Universal Code", "callback_data": "mode_universal"}],
+            [{"text": "🎮 AI Agent Otonom Full Roblox", "callback_data": "mode_roblox"}],
+            [{"text": "📊 Status Game & VPS", "callback_data": "mode_status"}],
+        ]
+
+    def _roblox_menu_keyboard(self) -> list:
+        return [
+            [{"text": "🐛 Laporkan Bug", "callback_data": "roblox_bug"}],
+            [{"text": "✨ Request Fitur Baru", "callback_data": "roblox_feature"}],
+            [{"text": "🔨 Paksa Build & Deploy Ulang", "callback_data": "roblox_rebuild"}],
+            [{"text": "◀️ Kembali ke Menu Utama", "callback_data": "back_main"}],
+        ]
+
+    async def _handle_start(self, chat_id: str) -> None:
+        """Tampilkan menu utama 2-mode."""
+        _roblox_state.pop(chat_id, None)
+        await self._send_keyboard(
+            chat_id,
+            (
+                "<b>🧠 NEXUS AI AGENT — Panel Kontrol</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Pilih mode AI yang ingin kamu gunakan:\n\n"
+                "🤖 <b>Universal Code</b> — Buat & jalankan kode apa saja\n"
+                "🎮 <b>Full Roblox AI</b> — Bug fix &amp; fitur game Roblox\n"
+                "📊 <b>Status</b> — Info game &amp; VPS"
+            ),
+            self._main_menu_keyboard(),
+        )
+
+    async def _handle_callback(self, chat_id: str, data: str, message_id: Optional[int]) -> None:
+        """Routing semua tombol inline keyboard."""
+
+        if data == "back_main":
+            _roblox_state.pop(chat_id, None)
+            await self._edit_message(
+                chat_id, message_id,
+                (
+                    "<b>🧠 NEXUS AI AGENT — Panel Kontrol</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Pilih mode AI:"
+                ),
+                self._main_menu_keyboard(),
+            )
+
+        elif data == "mode_universal":
+            _roblox_state[chat_id] = {"step": "universal"}
+            await self._edit_message(
+                chat_id, message_id,
+                (
+                    "<b>🤖 AI Agent Universal Code</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Ketik request kode kamu.\n\n"
+                    "<b>Contoh:</b>\n"
+                    "• <code>python buat script rename file massal</code>\n"
+                    "• <code>rust implementasi linked list</code>\n"
+                    "• <code>javascript fetch API cuaca dengan async/await</code>\n\n"
+                    "💬 Ketik sekarang:"
+                ),
+            )
+
+        elif data == "mode_roblox":
+            _roblox_state[chat_id] = {"step": "roblox_menu"}
+            await self._edit_message(
+                chat_id, message_id,
+                (
+                    "<b>🎮 AI Agent Otonom Full Roblox</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Apa yang ingin kamu lakukan?"
+                ),
+                self._roblox_menu_keyboard(),
+            )
+
+        elif data == "mode_status":
+            import datetime
+            lua_count = sum(
+                1 for root, _, files in os.walk(SOURCE_CODE_DIRECTORY)
+                for f in files if f.endswith((".lua", ".luau"))
+            ) if os.path.exists(SOURCE_CODE_DIRECTORY) else 0
+            build_time = ""
+            if os.path.exists(COMPILED_GAME_FILE):
+                mtime = os.path.getmtime(COMPILED_GAME_FILE)
+                dt = datetime.datetime.fromtimestamp(mtime)
+                build_time = f"\n📅 Build terakhir: {dt.strftime('%d/%m/%Y %H:%M:%S')}"
+            await self._edit_message(
+                chat_id, message_id,
+                (
+                    f"<b>📊 STATUS GAME &amp; VPS</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🗂️ File Lua/Luau  : <code>{lua_count} file</code>\n"
+                    f"🤖 Agent AI      : <code>{len(ACTIVE_AGENTS)} aktif</code>\n"
+                    f"📦 File .rbxl    : <code>{'Ada' if os.path.exists(COMPILED_GAME_FILE) else 'Tidak ada'}</code>{build_time}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                [[{"text": "🔄 Refresh", "callback_data": "mode_status"},
+                  {"text": "◀️ Kembali", "callback_data": "back_main"}]],
+            )
+
+        elif data == "roblox_bug":
+            _roblox_state[chat_id] = {"step": "waiting_bug"}
+            await self._edit_message(
+                chat_id, message_id,
+                (
+                    "<b>🐛 Laporkan Bug</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Ceritakan bug yang kamu temukan secara detail.\n"
+                    "Semakin detail → semakin tepat perbaikannya!\n\n"
+                    "<b>Contoh yang baik:</b>\n"
+                    "<i>Player spawn di tengah laut saat join game. "
+                    "Tombol X di HUD tidak muncul. "
+                    "Buy/Sell muncul padahal inventory kosong.</i>\n\n"
+                    "💬 Ceritakan bug kamu:"
+                ),
+            )
+
+        elif data == "roblox_feature":
+            _roblox_state[chat_id] = {"step": "waiting_feature"}
+            await self._edit_message(
+                chat_id, message_id,
+                (
+                    "<b>✨ Request Fitur Baru</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Deskripsikan fitur yang ingin kamu tambahkan.\n\n"
+                    "<b>Contoh:</b>\n"
+                    "<i>Tambahkan sistem guild — pemain bisa buat kelompok, "
+                    "chat guild, dan share reward dari boss raid.</i>\n\n"
+                    "💬 Deskripsikan fitur kamu:"
+                ),
+            )
+
+        elif data == "roblox_rebuild":
+            await self._edit_message(
+                chat_id, message_id,
+                "🔨 <b>Memulai Build &amp; Deploy Ulang...</b>\nHarap tunggu beberapa menit.",
+            )
+            asyncio.create_task(self._force_roblox_rebuild(chat_id))
+
+        elif data.startswith("roblox_confirm_"):
+            state = _roblox_state.get(chat_id, {})
+            pending = state.get("pending_tasks", [])
+            if not pending:
+                await self._send(chat_id, "⚠️ Tidak ada task. Mulai lagi dengan /start")
+                return
+            await self._send(chat_id, "🚀 <b>Eksekusi Antigravity dimulai!</b>")
+            asyncio.create_task(self._run_roblox_pipeline(chat_id, pending))
+
+        elif data == "roblox_cancel":
+            _roblox_state.pop(chat_id, None)
+            await self._edit_message(
+                chat_id, message_id,
+                "❌ Dibatalkan. Gunakan /start untuk memulai lagi.",
+            )
+
+    # ================================================================
+    # ROBLOX AI PIPELINE — ANTIGRAVITY STYLE
+    # ================================================================
+
+    async def _analyze_roblox_report(self, report: str) -> list:
+        """Gunakan Gemini untuk analisis laporan → daftar tugas spesifik."""
+        import json as _json
+        prompt = (
+            "Kamu adalah AI Architect untuk game Roblox FantasyExtraction/TrueApex.\n"
+            "Analisis laporan berikut dan buat daftar tugas perbaikan SPESIFIK.\n\n"
+            f"LAPORAN: {report}\n\n"
+            "STRUKTUR PROJECT (Rojo):\n"
+            "- src/StarterGui/        → UI/ScreenGui (.client.lua atau .rbxmx)\n"
+            "- src/ServerScriptService/  → Server scripts (.server.lua)\n"
+            "- src/StarterPlayerScripts/ → Client scripts (.client.lua)\n"
+            "- src/ReplicatedStorage/    → ModuleScripts (.lua)\n\n"
+            "OUTPUT FORMAT (JSON array saja, tidak ada teks lain):\n"
+            '[{"id":1,"title":"judul","target_folder":"StarterGui","target_file_hint":"nama_file",'
+            '"action":"fix_bug","priority":"high","detail":"instruksi spesifik"}]\n\n'
+            "ATURAN: maks 8 tugas, sespesifik mungkin. HANYA JSON:\n"
+        )
+        api_key = self.agent.rotator.get_key()
+        if not api_key:
+            return [{"id": 1, "title": "Perbaiki masalah", "target_folder": "StarterGui",
+                     "target_file_hint": "unknown", "action": "fix_bug",
+                     "priority": "high", "detail": report}]
+
+        loop = asyncio.get_running_loop()
+
+        def _call():
+            env = os.environ.copy()
+            env["GEMINI_API_KEY"] = api_key
+            env["CI"] = "true"
+            env["NO_COLOR"] = "1"
+            env["TERM"] = "dumb"
+            try:
+                r = subprocess.run(
+                    [GEMINI_CLI_PATH, "-m", "models/gemini-2.0-flash", "-y", "-p", prompt],
+                    env=env, capture_output=True, text=True, timeout=120,
+                )
+                return r.stdout.strip()
+            except Exception as e:
+                return f"ERROR: {e}"
+
+        response = await loop.run_in_executor(None, _call)
+        import re as _re
+        import json as _json
+        m = _re.search(r'\[.+?\]', response, flags=_re.DOTALL)
+        if m:
+            try:
+                tasks = _json.loads(m.group())
+                if isinstance(tasks, list) and tasks:
+                    return tasks
+            except Exception:
+                pass
+        return [{"id": 1, "title": "Perbaiki masalah yang dilaporkan",
+                 "target_folder": "StarterGui", "target_file_hint": "unknown",
+                 "action": "fix_bug", "priority": "high", "detail": report}]
+
+    def _build_status_board(self, tasks: list, statuses: dict, phase: str, summary: str = "") -> str:
+        """Papan status Antigravity-style dalam format HTML."""
+        ICONS = {"pending": "⏳", "running": "⚙️", "done": "✅", "failed": "❌"}
+        PRI = {"high": "🔴", "medium": "🟡", "low": "🟢"}
+        rows = ""
+        for t in tasks:
+            icon = ICONS.get(statuses.get(t["id"], "pending"), "⏳")
+            pri = PRI.get(t.get("priority", "medium"), "🟡")
+            title = t["title"][:32]
+            rows += f"  {icon} {pri} {title}\n"
+        done = sum(1 for s in statuses.values() if s == "done")
+        failed = sum(1 for s in statuses.values() if s == "failed")
+        total = len(tasks)
+        return (
+            f"<pre>╔══════════════════════════════════╗\n"
+            f"║  🚀 NEXUS AI — {phase[:18]:<18}║\n"
+            f"╠══════════════════════════════════╣\n"
+            f"{rows}"
+            f"╠══════════════════════════════════╣\n"
+            f"║  ✅ {done}/{total} selesai  ❌ {failed} gagal         ║\n"
+            f"║  📋 {summary[:30]:<30}║\n"
+            f"╚══════════════════════════════════╝</pre>"
+        )
+
+    async def _execute_single_task(self, task: dict) -> tuple:
+        """Eksekusi satu tugas Roblox: cari file → Gemini generate fix → tulis disk."""
+        try:
+            hint = task.get("target_file_hint", "")
+            folder = task.get("target_folder", "StarterGui")
+            detail = task.get("detail", "")
+            action = task.get("action", "fix_bug")
+
+            # Cari file yang relevan
+            file_path = None
+            if hint and hint != "unknown":
+                hint_lower = hint.lower().replace(" ", "_").replace("-", "_")
+                best_score = 0
+                for root, _, files in os.walk(SOURCE_CODE_DIRECTORY):
+                    for fname in files:
+                        if not fname.endswith((".lua", ".luau", ".rbxmx")):
+                            continue
+                        base = os.path.splitext(fname)[0].lower()
+                        score = 100 if hint_lower == base else 50 if hint_lower in base or base in hint_lower else 0
+                        if score > best_score:
+                            best_score = score
+                            file_path = os.path.join(root, fname)
+                if best_score < 10:
+                    file_path = None
+
+            original_code = ""
+            if file_path and os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    original_code = f.read()
+            else:
+                safe_name = __import__("re").sub(r"[^\w]", "_", task.get("title", "new")).upper()
+                if folder == "ServerScriptService":
+                    fname = f"{safe_name}.server.lua"
+                elif folder in ("StarterGui", "StarterPlayerScripts"):
+                    fname = f"{safe_name}.client.lua"
+                else:
+                    fname = f"{safe_name}.lua"
+                file_path = os.path.join(SOURCE_CODE_DIRECTORY, folder, fname)
+
+            code_ctx = original_code[:3000] + ("..." if len(original_code) > 3000 else "")
+            is_new = not original_code
+
+            prompt = (
+                "Kamu adalah senior Roblox Luau developer. Perbaiki atau buat kode berikut.\n\n"
+                f"TUGAS: {detail}\n"
+                f"FOLDER: {folder}\n"
+                f"AKSI: {action}\n\n"
+                f"KODE SAAT INI:\n{code_ctx if code_ctx else '(File baru)'}\n\n"
+                "ATURAN WAJIB:\n"
+                "1. Baris pertama HARUS --!strict\n"
+                "2. Spawn player HARUS ke SpawnLocation atau Teams\n"
+                "3. Tombol UI HARUS punya handler Activated/MouseButton1Click\n"
+                "4. Buy/Sell: validasi inventory sebelum tampilkan tombol\n"
+                "5. Jangan gunakan Enum untuk DisplayOrder/ZIndex (pakai integer)\n"
+                "HANYA output kode Luau murni:\n"
+            )
+
+            api_key = self.agent.rotator.get_key()
+            env = os.environ.copy()
+            env["GEMINI_API_KEY"] = api_key
+            env["CI"] = "true"
+            env["NO_COLOR"] = "1"
+            env["TERM"] = "dumb"
+            loop = asyncio.get_running_loop()
+
+            def _gen():
+                try:
+                    r = subprocess.run(
+                        [GEMINI_CLI_PATH, "-m", "models/gemini-2.0-flash", "-y", "-p", prompt],
+                        env=env, capture_output=True, text=True, timeout=180,
+                    )
+                    return r.stdout.strip()
+                except Exception as e:
+                    return f"ERROR: {e}"
+
+            fixed_code = await loop.run_in_executor(None, _gen)
+            if not fixed_code or "ERROR:" in fixed_code[:20] or len(fixed_code.strip()) < 20:
+                return False, f"Gemini gagal: {fixed_code[:80]}"
+
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(fixed_code)
+            return True, f"{'Dibuat' if is_new else 'Diperbarui'}: {os.path.basename(file_path)}"
+        except Exception as e:
+            return False, f"Exception: {str(e)[:100]}"
+
+    async def _run_roblox_pipeline(self, chat_id: str, tasks: list) -> None:
+        """Eksekusi semua tugas Roblox secara paralel — Antigravity style."""
+        statuses = {t["id"]: "pending" for t in tasks}
+
+        # Kirim papan status awal
+        board_msg_id = await self._send_keyboard(
+            chat_id,
+            self._build_status_board(tasks, statuses, "MEMULAI", "Paralel mode aktif..."),
+            []
+        )
+        await asyncio.sleep(0.5)
+
+        # Tandai semua sebagai running
+        for t in tasks:
+            statuses[t["id"]] = "running"
+        if board_msg_id:
+            await self._edit_message(
+                chat_id, board_msg_id,
+                self._build_status_board(tasks, statuses, "EKSEKUSI PARALEL", f"{len(tasks)} task berjalan..."),
+            )
+
+        # Eksekusi paralel
+        async def run_one(task):
+            ok, msg = await self._execute_single_task(task)
+            statuses[task["id"]] = "done" if ok else "failed"
+            done_n = sum(1 for s in statuses.values() if s in ("done", "failed"))
+            if board_msg_id:
+                await self._edit_message(
+                    chat_id, board_msg_id,
+                    self._build_status_board(tasks, statuses, "EKSEKUSI PARALEL", f"{done_n}/{len(tasks)} selesai..."),
+                )
+            return ok, msg
+
+        results = await asyncio.gather(*[run_one(t) for t in tasks])
+        ok_count = sum(1 for ok, _ in results if ok)
+        fail_count = sum(1 for ok, _ in results if not ok)
+
+        # Status akhir task
+        if board_msg_id:
+            await self._edit_message(
+                chat_id, board_msg_id,
+                self._build_status_board(tasks, statuses, "TASK SELESAI", f"{ok_count} OK / {fail_count} gagal"),
+            )
+        await asyncio.sleep(1)
+
+        # ProactiveFix sebelum build
+        fix_msg = "🔧 ProactiveFix: sedang scan..."
+        await self._send(chat_id, fix_msg)
+        try:
+            from nexus_main import RojoBuildAutoHealer
+            fixes = RojoBuildAutoHealer.proactive_scan_and_fix()
+            await self._send(chat_id, f"🔧 ProactiveFix: {fixes} masalah diperbaiki." if fixes > 0 else "🔧 ProactiveFix: tidak ada masalah tambahan.")
+        except Exception as e:
+            await self._send(chat_id, f"⚠️ ProactiveFix skip: {e}")
+
+        # Rojo Build
+        await self._send(chat_id, "🏗️ <b>Rojo build dimulai...</b>")
+        loop = asyncio.get_running_loop()
+
+        def _build():
+            try:
+                from nexus_main import RobloxDeployer
+                return RobloxDeployer.compile_rojo()
+            except Exception as e2:
+                return False, str(e2)
+
+        rojo_ok, rojo_err = await loop.run_in_executor(None, _build)
+
+        if not rojo_ok:
+            await self._send(chat_id, "⚠️ Build gagal. Menjalankan <b>auto-heal</b>...")
+            try:
+                from nexus_main import RojoBuildAutoHealer
+                agent = ACTIVE_AGENTS[0] if ACTIVE_AGENTS else {}
+                healed = await RojoBuildAutoHealer.heal_loop(rojo_err, agent)
+                if healed:
+                    rojo_ok, rojo_err = await loop.run_in_executor(None, _build)
+            except Exception as e3:
+                await self._send(chat_id, f"❌ Auto-heal error: {e3}")
+
+        if rojo_ok:
+            await self._send(chat_id, "🚀 <b>Build berhasil! Deploy ke Roblox...</b>")
+            try:
+                from nexus_main import RobloxDeployer
+                await RobloxDeployer.publish(0)
+            except Exception as e4:
+                await self._send(
+                    chat_id,
+                    f"✅ Build berhasil! (Deploy perlu dilakukan manual dari VPS: {e4})"
+                )
+        else:
+            await self._send(
+                chat_id,
+                f"❌ <b>Build gagal</b> setelah auto-heal.\n<pre>{rojo_err[:300]}</pre>"
+            )
+
+        # Ringkasan
+        await self._send(
+            chat_id,
+            (
+                f"<b>📊 RINGKASAN EKSEKUSI</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ Task berhasil : {ok_count}/{len(tasks)}\n"
+                f"❌ Task gagal   : {fail_count}/{len(tasks)}\n"
+                f"🏗️ Rojo build   : {'✅ Berhasil' if rojo_ok else '❌ Gagal'}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Gunakan /start untuk request berikutnya."
+            )
+        )
+        _roblox_state.pop(chat_id, None)
+
+    async def _handle_roblox_report(self, chat_id: str, text: str, step: str) -> None:
+        """Proses laporan bug/fitur dari pengguna."""
+        report_type = "Bug" if step == "waiting_bug" else "Fitur"
+        _roblox_state[chat_id] = {"step": "analyzing"}
+        await self._send(
+            chat_id,
+            f"🔍 <b>Menganalisis {report_type.lower()} yang dilaporkan...</b>\n"
+            f"AI sedang membuat daftar tugas..."
+        )
+
+        tasks = await self._analyze_roblox_report(text)
+        _roblox_state[chat_id] = {"step": "confirming", "pending_tasks": tasks}
+
+        task_lines = ""
+        for t in tasks:
+            pri = "🔴" if t.get("priority") == "high" else "🟡" if t.get("priority") == "medium" else "🟢"
+            detail_short = t.get("detail", "")[:80]
+            task_lines += f"{pri} <b>{t['id']}. {t['title']}</b>\n   <i>{detail_short}</i>\n\n"
+
+        await self._send_keyboard(
+            chat_id,
+            (
+                f"<b>📋 DAFTAR TUGAS TERDETEKSI</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"{task_lines}"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Total: <b>{len(tasks)} tugas</b> | Mode: <b>Paralel</b>\n\n"
+                f"Konfirmasi untuk mulai eksekusi:"
+            ),
+            [
+                [{"text": f"🚀 Kerjakan Semua ({len(tasks)} task)", "callback_data": f"roblox_confirm_{chat_id}"}],
+                [{"text": "❌ Batalkan", "callback_data": "roblox_cancel"}],
+            ],
+        )
+
+    async def _force_roblox_rebuild(self, chat_id: str) -> None:
+        """Paksa build + deploy ulang tanpa modifikasi kode."""
+        try:
+            from nexus_main import RojoBuildAutoHealer, RobloxDeployer
+            fixes = RojoBuildAutoHealer.proactive_scan_and_fix()
+            await self._send(chat_id, f"🔧 ProactiveFix: {fixes} masalah diperbaiki.")
+
+            loop = asyncio.get_running_loop()
+
+            def _build():
+                return RobloxDeployer.compile_rojo()
+
+            rojo_ok, rojo_err = await loop.run_in_executor(None, _build)
+            if rojo_ok:
+                await self._send(chat_id, "🚀 <b>Build berhasil! Deploy ke Roblox...</b>")
+                await RobloxDeployer.publish(0)
+            else:
+                await self._send(
+                    chat_id,
+                    f"❌ Build gagal:\n<pre>{rojo_err[:300]}</pre>"
+                )
+        except Exception as e:
+            await self._send(chat_id, f"❌ Error: {e}")
 
 
     async def _call_gemini_chat(self, system_prompt: str, user_text: str) -> str:
@@ -1234,14 +1815,20 @@ class TelegramPolyglotListener:
             "[bold cyan][Polyglot Listener v3] Telegram bot polling dimulai "
             "(Persistent Sandbox + Auto-Install + No-Timeout)...[/bold cyan]"
         )
-        await self._send(
+        await self._send_keyboard(
             self.master_chat_id,
-            "<b>NEXUS POLYGLOT LISTENER v3 AKTIF!</b>\n\n"
-            "Fitur baru:\n"
-            "- Auto-install compiler (tanpa tanya)\n"
-            "- Sandbox persisten (tidak dihapus otomatis)\n"
-            "- Instruksi tambahan tanpa batas waktu\n\n"
-            "Ketik /help untuk panduan lengkap."
+            (
+                "<b>🧠 NEXUS AI AGENT AKTIF!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Sistem siap menerima perintah.\n\n"
+                "🤖 <b>Universal Code</b> — Buat &amp; jalankan kode apa saja\n"
+                "🎮 <b>Full Roblox AI</b> — Bug fix &amp; fitur game\n"
+                "📊 <b>Status</b> — Info VPS &amp; build\n\n"
+                "Ketik /help untuk panduan polyglot lengkap."
+            ),
+            [
+                [{"text": "🚀 Buka Menu Utama", "callback_data": "back_main"}],
+            ]
         )
 
         while self._running:
