@@ -433,7 +433,7 @@ class PolyglotSynthesizerAgent:
         full_input = f"[SYSTEM]:\n{system_prompt}\n\n[TASK]:\n{user_prompt}"
         command = [
             GEMINI_CLI_PATH,
-            "-m", "models/gemma-4-31b-it",  # 1500 RPD per key
+            "-m", "models/gemini-2.0-flash",  # Model TERPISAH dari Roblox agent (gemma-4-31b-it)
             "-y",
             "-p", (
                 "Output HANYA kode murni yang langsung bisa dieksekusi. "
@@ -1043,7 +1043,8 @@ class TelegramPolyglotListener:
         """
         Panggil Gemini CLI khusus untuk percakapan chat.
         Model: gemini-3.1-flash-lite-preview (ringan & cepat, hemat rate limit).
-        Berbeda dari _call_gemini milik PolyglotSynthesizerAgent yang pakai gemma-4-31b-it.
+        Berbeda dari _call_gemini milik PolyglotSynthesizerAgent yang pakai gemini-2.0-flash.
+        Rate limit TERPISAH dari Roblox AI agent (gemma-4-31b-it) sehingga tidak tabrakan.
         Prioritas key: GEMINI_TELEGRAM_KEY (eksklusif) → fallback ke pool agent.
         """
         api_key = os.getenv("GEMINI_TELEGRAM_KEY", "").strip() or self.agent.rotator.get_key()
@@ -1064,7 +1065,7 @@ class TelegramPolyglotListener:
             "-p", "Jawab secara natural dan ringkas. Bukan kode, kecuali diminta.",
         ]
 
-        FALLBACK_MODEL = "models/gemma-4-31b-it"
+        FALLBACK_MODEL = "models/gemini-2.0-flash"  # Fallback ke model terpisah dari Roblox
         for attempt, model in enumerate([command[command.index("-m") + 1], FALLBACK_MODEL]):
             if attempt == 1:
                 # Ganti model ke fallback
