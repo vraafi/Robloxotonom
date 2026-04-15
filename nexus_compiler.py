@@ -43,8 +43,8 @@ class AbsoluteOmniValidator:
                 omni_errors.append(f"Contract Violation: Anda diwajibkan menggunakan '{req}' agar sesuai arsitektur.")
             
             if req == "Recipe":
-                if not re.search(r'Recipe\s*[=:]\s*\{\s*[\'"]?[a-zA-Z_]', sanitized_code):
-                    omni_errors.append("Crafting Logic Violation: Tabel 'Recipe' ditemukan, tetapi KOSONG atau formatnya salah. Hukum Crafting anti-P2W mewajibkan definisi bahan baku nyata di dalam tabel, contoh: `local Recipe = { Iron = 2, Wood = 1 }`.")
+                if not re.search(r'Recipe\s*[=:]\s*\{\s*[\[\'"a-zA-Z_]', sanitized_code):
+                    omni_errors.append("Crafting Logic Violation: Tabel 'Recipe' ditemukan, tetapi KOSONG atau formatnya salah. Hukum Crafting anti-P2W mewajibkan definisi bahan baku nyata. Format WAJIB salah satu dari ini: (1) local Recipe = {Iron=2, Wood=1} ATAU (2) local Recipe = {\"Iron\"=2} ATAU (3) local Recipe = {\"Kevlar Fiber\"=3, \"Iron Ingot\"=2}. DILARANG KERAS menulis Recipe = {} kosong!")
 
             if req == "ArmorTier":
                 if not re.search(r'ArmorTier\s*[=:]\s*[1-6]', sanitized_code):
