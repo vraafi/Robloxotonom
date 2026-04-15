@@ -137,7 +137,7 @@ class RbxmxGenerator:
         '      <string name="Name">{name}</string>\n'
         '      <bool name="ResetOnSpawn">false</bool>\n'
         '      <bool name="Enabled">true</bool>\n'
-        '      <token name="DisplayOrder">10</token>\n'
+        '      <int name="DisplayOrder">10</int>\n'
         '    </Properties>\n'
         '    <Item class="LocalScript" referent="RBXG1">\n'
         '      <Properties>\n'
