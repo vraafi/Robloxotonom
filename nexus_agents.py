@@ -896,12 +896,28 @@ TASK_SPECIFIC_INSTRUCTIONS: dict = {
         "[KATEGORI: ARMOR MODERN - ROMPI/HELM TAKTIS]\n"
         "Anda sedang membuat Armor yang bisa dipakai karakter.\n"
         "HUKUM ARMOR MODERN (MUTLAK):\n"
-        "1. local Recipe = {['Kevlar Fiber'] = 3, ['Iron Ingot'] = 2}\n"
-        "2. local Durability: number = 100\n"
-        "3. local ArmorTier: number = 3  -- nilai 1-6\n"
-        "4. local MaterialType: string = 'Ceramic'  -- atau 'Steel'\n"
-        "5. local ItemCategory: string = 'Armor'\n"
-        "6. local BasePrice: number = 2500\n"
+        "\n"
+        "PERINGATAN KERAS — RECIPE WAJIB DIISI, JANGAN SAMPAI KOSONG!\n"
+        "VALIDATOR AKAN MENOLAK TERUS JIKA RECIPE KOSONG!\n"
+        "GUNAKAN PERSIS SALAH SATU FORMAT INI (SALIN LANGSUNG):\n"
+        "\n"
+        "FORMAT A (WAJIB GUNAKAN INI jika tidak yakin):\n"
+        "local Recipe = {Kevlar = 3, Iron = 2, Ceramic = 1}\n"
+        "\n"
+        "FORMAT B (Alternatif yang juga valid):\n"
+        "local Recipe = {}\n"
+        "Recipe.Kevlar = 3\n"
+        "Recipe.Iron = 2\n"
+        "\n"
+        "JANGAN PERNAH MENULIS: local Recipe = {}  -- INI AKAN SELALU DITOLAK!\n"
+        "\n"
+        "VARIABEL LAIN YANG WAJIB ADA:\n"
+        "local Durability: number = 100\n"
+        "local ArmorTier: number = 3\n"
+        "local MaterialType: string = 'Ceramic'\n"
+        "local ItemCategory: string = 'Armor'\n"
+        "local BasePrice: number = 2500\n"
+        "\n"
         "7. HitboxSeparation: Part transparan CanCollide=true sebagai hitbox.\n"
         "8. VisualEquip: WeldConstraint armor ke UpperTorso atau Head pemain saat diequip.\n"
         "9. ProximityPrompt ActionText = 'Gunakan'.\n"
@@ -911,12 +927,19 @@ TASK_SPECIFIC_INSTRUCTIONS: dict = {
         "[KATEGORI: ARMOR FANTASY - ZIRAH/JUBAH KSATRIA]\n"
         "Anda sedang membuat Armor Fantasy yang bisa dipakai karakter.\n"
         "HUKUM ARMOR FANTASY (MUTLAK):\n"
-        "1. local Recipe = {['Dragon Scale'] = 5, ['Mithril Ingot'] = 3}\n"
-        "2. local Durability: number = 100\n"
-        "3. local ArmorTier: number = 4\n"
-        "4. local MaterialType: string = 'Mithril'  -- atau 'Leather', 'Dragonscale'\n"
-        "5. local ItemCategory: string = 'Armor'\n"
-        "6. local BasePrice: number = 5000\n"
+        "\n"
+        "PERINGATAN KERAS — RECIPE WAJIB DIISI, JANGAN SAMPAI KOSONG!\n"
+        "GUNAKAN PERSIS FORMAT INI (SALIN LANGSUNG):\n"
+        "local Recipe = {DragonScale = 5, Mithril = 3, Crystal = 1}\n"
+        "JANGAN MENULIS: local Recipe = {}  -- SELALU DITOLAK VALIDATOR!\n"
+        "\n"
+        "VARIABEL WAJIB:\n"
+        "local Durability: number = 100\n"
+        "local ArmorTier: number = 4\n"
+        "local MaterialType: string = 'Mithril'\n"
+        "local ItemCategory: string = 'Armor'\n"
+        "local BasePrice: number = 5000\n"
+        "\n"
         "7. HitboxSeparation + VisualEquip: WeldConstraint ke UpperTorso atau Head.\n"
         "8. ProximityPrompt ActionText = 'Gunakan'.\n"
     ),
@@ -1289,6 +1312,54 @@ class OmniSynthesizerAgent:
                 f"{MARKDOWN_BLOCK}lua\n{safe_code}\n{MARKDOWN_BLOCK}\n"
                 f"[ERROR LOG DARI COMPILER]:\n{previous_error}\n\n"
             )
+
+            # ── ESKALASI KHUSUS: Recipe kosong ─────────────────────────────────
+            if "Recipe" in previous_error or "Crafting Logic Violation" in previous_error:
+                comprehensive_prompt += (
+                    "[DARURAT — RECIPE KOSONG TERDETEKSI]:\n"
+                    "Kamu terus mengirim Recipe kosong! Validator MENOLAK Recipe = {} tanpa isi.\n"
+                    "SEKARANG JUGA, GUNAKAN PERSIS BARIS INI di dalam skripmu (SALIN PERSIS):\n"
+                    "\n"
+                    "local Recipe = {Kevlar = 3, Iron = 2, Wood = 1}\n"
+                    "\n"
+                    "PENJELASAN ATURAN VALIDATOR:\n"
+                    "- DITOLAK : local Recipe = {}\n"
+                    "- DITOLAK : local Recipe = {\n}\n"
+                    "- DITERIMA: local Recipe = {Kevlar = 3, Iron = 2}\n"
+                    "- DITERIMA: local Recipe = {DragonScale = 5, Mithril = 3}\n"
+                    "Tulis bahan baku sesederhana mungkin dengan kata tanpa spasi.\n"
+                    "Contoh nama bahan: Iron, Wood, Kevlar, Crystal, Leather, Stone, Bone\n\n"
+                )
+                console_terminal_interface.print(
+                    f"[bold red]  [ESCALATION] Recipe kosong terdeteksi — menyuntikkan instruksi DARURAT![/bold red]"
+                )
+
+            # ── ESKALASI KHUSUS: ArmorTier salah ───────────────────────────────
+            if "ArmorTier" in previous_error:
+                comprehensive_prompt += (
+                    "[DARURAT — ArmorTier SALAH]:\n"
+                    "ArmorTier HARUS berupa angka 1 sampai 6. Gunakan persis ini:\n"
+                    "local ArmorTier: number = 3\n\n"
+                )
+
+            # ── ESKALASI KHUSUS: MaterialType salah ────────────────────────────
+            if "MaterialType" in previous_error:
+                comprehensive_prompt += (
+                    "[DARURAT — MaterialType SALAH]:\n"
+                    "MaterialType HARUS string tanpa spasi. Pilih salah satu:\n"
+                    "local MaterialType: string = 'Ceramic'\n"
+                    "-- atau: 'Steel', 'Kevlar', 'Mithril', 'Leather', 'Dragonscale'\n\n"
+                )
+
+            # ── ESKALASI KHUSUS: ItemCategory salah ────────────────────────────
+            if "ItemCategory" in previous_error or "Economy Taxonomy" in previous_error:
+                comprehensive_prompt += (
+                    "[DARURAT — ItemCategory SALAH]:\n"
+                    "ItemCategory HARUS persis salah satu string ini:\n"
+                    "local ItemCategory: string = 'Armor'\n"
+                    "-- Pilihan resmi: 'Weapon', 'Ammunition', 'Armor', 'Medical', 'Material', 'Valuable', 'Bait', 'Tool'\n\n"
+                )
+            # ───────────────────────────────────────────────────────────────────
 
         console_terminal_interface.print(
             f"[bold cyan]  [{agent['name']}] Memproses {module_name}... (Antri Sequential - Standar Militer)[/bold cyan]"
