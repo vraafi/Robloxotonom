@@ -35,7 +35,7 @@ from nexus_project_scanner import (
 
 _key_rotator = ApexKeyRotator([a["api_key"] for a in ACTIVE_AGENTS if a["api_key"]])
 
-CLI_EXECUTION_SEMAPHORE = asyncio.Semaphore(1)
+CLI_EXECUTION_SEMAPHORE = asyncio.Semaphore(len(ACTIVE_AGENTS))  # ⚡ PARALLEL: Semua agent berjalan bersamaan
 
 MARKDOWN_BLOCK = chr(96) * 3
 
