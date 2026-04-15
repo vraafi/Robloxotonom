@@ -468,4 +468,4 @@ class PreDeploymentValidator:
 if __name__ == "__main__":
     print("Nexus Healer Watchdog: Aktif.")
     while True:
-        time.sleep(60)
+        time.sleep(5)  # ⚡ PARALLEL: Dikurangi 60s → 5s
