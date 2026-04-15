@@ -541,7 +541,7 @@ async def run_orchestrator():
 
         while True:
             console_terminal_interface.print(
-                Panel(f"[bold magenta]=== EVOLUSI LEVEL {evolution_level}/50 - SIKLUS KE-{generation_counter} ===[/bold magenta]")
+                Panel(f"[bold magenta]=== EVOLUSI LEVEL {evolution_level} - SIKLUS KE-{generation_counter} ===[/bold magenta]")
             )
 
             if evolution_level == 1:
@@ -689,7 +689,7 @@ async def run_orchestrator():
 
             if evolution_level >= 50:
                 console_terminal_interface.print(
-                    "[bold green]🎉 Evolusi 50 Selesai! Memulai Deployment Akhir (Telegram -> Roblox)...[/bold green]"
+                    f"[bold green]🎉 Siklus {generation_counter} (Evolusi {evolution_level}) Selesai! Deploy ke Roblox... Sistem akan lanjut otomatis.[/bold green]"
                 )
 
                 # ══════════════════════════════════════════════════════════════
@@ -733,7 +733,11 @@ async def run_orchestrator():
                             f"📦 File .rbxl terakhir yang tersimpan (mungkin tidak lengkap)\n"
                             f"JANGAN upload ke Roblox sebelum memeriksa kelengkapan file!",
                         )
-                    break
+                    # ⚡ INFINITE: Jangan stop, reset ke evolusi 1 dan lanjut
+                    evolution_level = 1
+                    generation_counter += 1
+                    await asyncio.sleep(15)
+                    continue
 
                 # ══════════════════════════════════════════════════════════════
                 # Semua file sudah 100% valid → lanjutkan deployment
@@ -752,7 +756,15 @@ async def run_orchestrator():
                 else:
                     await healer.initialize_and_scan()
                     await RobloxDeployer.publish(evolution_level)
-                break
+                # ⚡ INFINITE: Siklus selesai → reset ke evolusi 1, lanjut otomatis
+                await send_telegram_notification(
+                    f"♾️ Siklus {generation_counter} selesai! Memulai siklus {generation_counter + 1}...",
+                    important=True
+                )
+                evolution_level = 1
+                generation_counter += 1
+                await asyncio.sleep(15)
+                continue
 
             evolution_level += 1
             generation_counter += 1
