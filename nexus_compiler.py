@@ -41,6 +41,16 @@ class AbsoluteOmniValidator:
             if "RunService" not in sanitized_code and "task.wait" not in sanitized_code:
                 omni_errors.append("Performance Violation: Loop terdeteksi tanpa RunService atau task.wait().")
 
+
+        # Rojo Property Type Mismatch Prevention (cegah sebelum sampai ke build Rojo)
+        _rojo_int_props = ["DisplayOrder", "ZIndex", "LayoutOrder", "TextSize"]
+        for _rp in _rojo_int_props:
+            if re.search(r"\\." + re.escape(_rp) + r"\\s*=\\s*Enum\\.", raw_luau_code):
+                omni_errors.append(
+                    "Rojo Type Violation: `" + _rp + "` wajib berupa integer (Int32), BUKAN Enum. "
+                    "SALAH: ." + _rp + " = Enum.Something | BENAR: ." + _rp + " = 5"
+                )
+
         for req in required_keywords:
             if req not in sanitized_code:
                 omni_errors.append(f"Contract Violation: Anda diwajibkan menggunakan '{req}' agar sesuai arsitektur.")
