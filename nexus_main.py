@@ -751,89 +751,82 @@ async def run_orchestrator():
             )
             await dump_ssd()
 
-            if evolution_level >= 50:
+            # ⚡ DEPLOY PER EVOLUSI — upload ke Roblox setiap evolusi selesai
+            console_terminal_interface.print(
+                f"[bold green]🚀 Evolusi {evolution_level} selesai! Deploy ke Roblox segera...[/bold green]"
+            )
+
+            # ══════════════════════════════════════════════════════════════
+            # PRE-DEPLOYMENT VALIDATOR
+            # Pastikan 100% file sudah ada dan valid sebelum upload ke Roblox.
+            # Jika ada yang hilang → regenerasi dulu, deployment menunggu.
+            # ══════════════════════════════════════════════════════════════
+            _validator = PreDeploymentValidator()
+            _deploy_agent = ACTIVE_AGENTS[agent_idx % len(ACTIVE_AGENTS)]
+            _validation_task_queue = _build_task_queue()
+
+            console_terminal_interface.print(
+                "[bold yellow]🛡️  [PRE-DEPLOY] Memverifikasi kelengkapan semua file game...[/bold yellow]"
+            )
+            _deploy_safe = await _validator.validate_and_complete(
+                task_queue=_validation_task_queue,
+                synthesizer=synthesizer,
+                agent=_deploy_agent,
+                notify_fn=send_telegram_notification,
+            )
+
+            if not _deploy_safe:
+                validator_fail_msg = (
+                    f"🚫 DEPLOYMENT EVOLUSI {evolution_level} DIBATALKAN\n"
+                    "Pre-Deployment Validator menemukan file yang tidak bisa di-generate.\n"
+                    "Periksa log VPS: tail -f nohup.out\n\n"
+                    "Kemungkinan penyebab:\n"
+                    "• Rate limit API Gemini habis\n"
+                    "• Task tertentu selalu gagal compiler check\n"
+                    "• Disk VPS penuh"
+                )
                 console_terminal_interface.print(
-                    f"[bold green]🎉 Siklus {generation_counter} (Evolusi {evolution_level}) Selesai! Deploy ke Roblox... Sistem akan lanjut otomatis.[/bold green]"
+                    "[bold red]🚫 DEPLOYMENT DIBATALKAN: File tidak 100% lengkap.[/bold red]"
                 )
-
-                # ══════════════════════════════════════════════════════════════
-                # PRE-DEPLOYMENT VALIDATOR
-                # Pastikan 100% file sudah ada dan valid sebelum upload ke Roblox.
-                # Jika ada yang hilang → regenerasi dulu, deployment menunggu.
-                # Deployment DIBATALKAN jika masih ada file yang tidak bisa dibuat.
-                # ══════════════════════════════════════════════════════════════
-                _validator = PreDeploymentValidator()
-                _deploy_agent = ACTIVE_AGENTS[agent_idx % len(ACTIVE_AGENTS)]
-                _validation_task_queue = _build_task_queue()
-
-                console_terminal_interface.print(
-                    "[bold yellow]🛡️  [PRE-DEPLOY] Memverifikasi kelengkapan semua file game...[/bold yellow]"
-                )
-                _deploy_safe = await _validator.validate_and_complete(
-                    task_queue=_validation_task_queue,
-                    synthesizer=synthesizer,
-                    agent=_deploy_agent,
-                    notify_fn=send_telegram_notification,
-                )
-
-                if not _deploy_safe:
-                    validator_fail_msg = (
-                        "🚫 DEPLOYMENT DIBATALKAN\n"
-                        "Pre-Deployment Validator menemukan file yang tidak bisa di-generate.\n"
-                        "Periksa log VPS: tail -f nohup.out\n\n"
-                        "Kemungkinan penyebab:\n"
-                        "• Rate limit API Gemini habis\n"
-                        "• Task tertentu selalu gagal compiler check\n"
-                        "• Disk VPS penuh"
+                await send_telegram_notification(validator_fail_msg, important=True)
+                if os.path.exists(COMPILED_GAME_FILE):
+                    await send_telegram_document(
+                        COMPILED_GAME_FILE,
+                        f"📦 File .rbxl Evolusi {evolution_level} (mungkin tidak lengkap)\n"
+                        f"Periksa file sebelum upload manual!",
                     )
-                    console_terminal_interface.print(
-                        "[bold red]🚫 DEPLOYMENT DIBATALKAN: File tidak 100% lengkap setelah regenerasi.[/bold red]"
-                    )
-                    await send_telegram_notification(validator_fail_msg, important=True)
-                    # Jika file .rbxl hasil build sebelumnya masih ada, kirim juga
-                    if os.path.exists(COMPILED_GAME_FILE):
-                        await send_telegram_document(
-                            COMPILED_GAME_FILE,
-                            f"📦 File .rbxl terakhir yang tersimpan (mungkin tidak lengkap)\n"
-                            f"JANGAN upload ke Roblox sebelum memeriksa kelengkapan file!",
-                        )
-                    # ⚡ INFINITE: Jangan stop, reset ke evolusi 1 dan lanjut
-                    evolution_level = 1
-                    generation_counter += 1
-                    await asyncio.sleep(15)
-                    continue
-
-                # ══════════════════════════════════════════════════════════════
-                # Semua file sudah 100% valid → lanjutkan deployment
-                # ══════════════════════════════════════════════════════════════
-                rojo_ok = RobloxDeployer.compile_rojo()
-                if not rojo_ok:
-                    # Rojo build gagal → notif Telegram + kirim src sebagai arsip
-                    rojo_fail_msg = (
-                        f"🔨 ROJO BUILD GAGAL (Evolusi {evolution_level})\n"
-                        f"File .rbxl tidak berhasil dibuat oleh Rojo.\n"
-                        f"Kemungkinan ada syntax error di file .lua.\n\n"
-                        f"Periksa log VPS: tail -f nexus_healer.log"
-                    )
-                    console_terminal_interface.print(f"[bold red]{rojo_fail_msg}[/bold red]")
-                    await send_telegram_notification(rojo_fail_msg, important=True)
-                else:
-                    await healer.initialize_and_scan()
-                    await RobloxDeployer.publish(evolution_level)
-                # ⚡ INFINITE: Siklus selesai → reset ke evolusi 1, lanjut otomatis
-                await send_telegram_notification(
-                    f"♾️ Siklus {generation_counter} selesai! Memulai siklus {generation_counter + 1}...",
-                    important=True
-                )
-                evolution_level = 1
+                # Tetap lanjut ke evolusi berikutnya meski deploy dibatalkan
+                evolution_level += 1
                 generation_counter += 1
-                await asyncio.sleep(15)
+                await asyncio.sleep(10)
                 continue
 
+            # ══════════════════════════════════════════════════════════════
+            # Semua file valid → build Rojo + publish ke Roblox
+            # ══════════════════════════════════════════════════════════════
+            rojo_ok = RobloxDeployer.compile_rojo()
+            if not rojo_ok:
+                rojo_fail_msg = (
+                    f"🔨 ROJO BUILD GAGAL (Evolusi {evolution_level})\n"
+                    f"File .rbxl tidak berhasil dibuat.\n"
+                    f"Kemungkinan ada syntax error di file .lua.\n\n"
+                    f"Periksa log VPS: tail -f nexus_healer.log"
+                )
+                console_terminal_interface.print(f"[bold red]{rojo_fail_msg}[/bold red]")
+                await send_telegram_notification(rojo_fail_msg, important=True)
+            else:
+                await healer.initialize_and_scan()
+                await RobloxDeployer.publish(evolution_level)
+
+            # Lanjut ke evolusi berikutnya
+            await send_telegram_notification(
+                f"⏭️ Evolusi {evolution_level} selesai → Lanjut Evolusi {evolution_level + 1}...",
+                important=False
+            )
             evolution_level += 1
             generation_counter += 1
-
             await asyncio.sleep(10)
+            continue
 
     except Exception as e:
         error_msg = f"FATAL ERROR di Orchestrator: {type(e).__name__}: {e}"
