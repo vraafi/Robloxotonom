@@ -1286,59 +1286,252 @@ class TelegramPolyglotListener:
     # ================================================================
 
     async def _analyze_roblox_report(self, report: str) -> list:
-        """Gunakan Gemini untuk analisis laporan → daftar tugas spesifik."""
-        import json as _json
-        prompt = (
-            "Kamu adalah AI Architect untuk game Roblox FantasyExtraction/TrueApex.\n"
-            "Analisis laporan berikut dan buat daftar tugas perbaikan SPESIFIK.\n\n"
-            f"LAPORAN: {report}\n\n"
-            "STRUKTUR PROJECT (Rojo):\n"
-            "- src/StarterGui/        → UI/ScreenGui (.client.lua atau .rbxmx)\n"
-            "- src/ServerScriptService/  → Server scripts (.server.lua)\n"
-            "- src/StarterPlayerScripts/ → Client scripts (.client.lua)\n"
-            "- src/ReplicatedStorage/    → ModuleScripts (.lua)\n\n"
-            "OUTPUT FORMAT (JSON array saja, tidak ada teks lain):\n"
-            '[{"id":1,"title":"judul","target_folder":"StarterGui","target_file_hint":"nama_file",'
-            '"action":"fix_bug","priority":"high","detail":"instruksi spesifik"}]\n\n'
-            "ATURAN: maks 8 tugas, sespesifik mungkin. HANYA JSON:\n"
-        )
+        """
+        Analisis laporan bug/fitur menggunakan Gemini — versi ditingkatkan.
+        Setiap bug = 1 task terpisah. Fallback ke rule-based extractor jika Gemini gagal.
+        """
+        import re as _re, json as _json
+
+        # STEP 1: Pre-processing — pisahkan laporan jadi kalimat
+        sentences = _re.split(r'(?<=[.!?])\s+|(?:,\s*dan\s+)|(?:\bdan\b)|(?:\n+)', report)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 15]
+
+        bug_count_hint = max(len(sentences), 3)
+
+        # STEP 2: Prompt yang sangat eksplisit
+        numbered = "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences[:10]))
+        prompt = f"""Kamu adalah Lead Engineer game Roblox bernama FantasyExtraction TrueApex.
+
+LAPORAN BUG/FITUR DARI PEMILIK GAME:
+{report}
+
+KALIMAT YANG TERDETEKSI ({len(sentences)} kalimat):
+{numbered}
+
+KONTEKS GAME PENTING:
+- Tema: Space station / pesawat luar angkasa
+- Spawn player: harus di DALAM space ship, bukan di tanah atau gelap
+- Setiap HUD WAJIB punya tombol X untuk menutup
+- Economy: mata uang "Dolar", sistem Flea Market (buy/sell item)
+- Monetization: popup iklan/gamepass saat join
+- Daily Login: reward 1.000 Dolar per hari, reset setiap 00:00 UTC
+
+STRUKTUR FILE ROJO:
+- StarterGui          = HUD, popup, tombol (.client.lua/.rbxmx)
+- ServerScriptService = logika server, spawn, economy (.server.lua)
+- StarterPlayerScripts= client control, kamera (.client.lua)
+- ReplicatedStorage   = data, config, modul (.lua)
+
+TUGAS KAMU:
+Buat DAFTAR TUGAS — setiap bug/masalah/fitur yang berbeda = SATU TASK TERPISAH.
+WAJIB buat minimal {min(bug_count_hint, 8)} task.
+Jangan gabungkan 2 masalah berbeda dalam 1 task.
+
+OUTPUT: JSON array saja, tanpa teks lain, tanpa markdown.
+Contoh format yang benar:
+[
+  {{"id": 1, "title": "Perbaiki spawn player di space ship", "target_folder": "ServerScriptService", "target_file_hint": "SPAWN_HANDLER", "action": "fix_bug", "priority": "high", "detail": "Pindahkan SpawnLocation ke dalam model space ship di Workspace. CharacterAdded harus teleport ke CFrame space ship. Pastikan tidak spawn di tanah atau area gelap."}},
+  {{"id": 2, "title": "Tambah tombol X ke semua HUD", "target_folder": "StarterGui", "target_file_hint": "HUD_MAIN", "action": "fix_bug", "priority": "high", "detail": "Tambahkan TextButton bernama CloseButton ke pojok kanan atas setiap ScreenGui Frame. Klik = Frame.Visible = false. Warna putih, teks X, ukuran 30x30."}}
+]
+
+JSON ARRAY:"""
+
         api_key = self.agent.rotator.get_key()
         if not api_key:
-            return [{"id": 1, "title": "Perbaiki masalah", "target_folder": "StarterGui",
-                     "target_file_hint": "unknown", "action": "fix_bug",
-                     "priority": "high", "detail": report}]
+            return self._fallback_task_extractor(report, sentences)
 
         loop = asyncio.get_running_loop()
 
-        def _call():
+        def _gemini_call(api_k: str) -> str:
             env = os.environ.copy()
-            env["GEMINI_API_KEY"] = api_key
+            env["GEMINI_API_KEY"] = api_k
             env["CI"] = "true"
             env["NO_COLOR"] = "1"
             env["TERM"] = "dumb"
             try:
                 r = subprocess.run(
                     [GEMINI_CLI_PATH, "-m", "models/gemini-2.0-flash", "-y", "-p", prompt],
-                    env=env, capture_output=True, text=True, timeout=120,
+                    env=env, capture_output=True, text=True, timeout=150,
                 )
                 return r.stdout.strip()
             except Exception as e:
                 return f"ERROR: {e}"
 
-        response = await loop.run_in_executor(None, _call)
-        import re as _re
-        import json as _json
-        m = _re.search(r'\[.+?\]', response, flags=_re.DOTALL)
+        # Coba 2x dengan key berbeda
+        for attempt in range(2):
+            if attempt == 1:
+                api_key = self.agent.rotator.rotate_key()
+            response = await loop.run_in_executor(None, _gemini_call, api_key)
+
+            console_terminal_interface.print(
+                f"[dim cyan][Roblox AI] Gemini attempt {attempt+1} response ({len(response)} chars)[/dim cyan]"
+            )
+
+            if not response or response.startswith("ERROR"):
+                continue
+
+            tasks = self._robust_json_extract(response)
+            if tasks and len(tasks) >= 1:
+                validated = []
+                for i, t in enumerate(tasks):
+                    if isinstance(t, dict) and t.get("title"):
+                        t.setdefault("id", i + 1)
+                        t.setdefault("target_folder", "StarterGui")
+                        t.setdefault("target_file_hint", "unknown")
+                        t.setdefault("action", "fix_bug")
+                        t.setdefault("priority", "high")
+                        t.setdefault("detail", t.get("title", ""))
+                        validated.append(t)
+                if validated:
+                    console_terminal_interface.print(
+                        f"[bold green][Roblox AI] {len(validated)} task terdeteksi dari Gemini.[/bold green]"
+                    )
+                    return validated
+
+        # Fallback rule-based
+        console_terminal_interface.print(
+            "[bold yellow][Roblox AI] Gemini gagal — menggunakan rule-based extractor.[/bold yellow]"
+        )
+        return self._fallback_task_extractor(report, sentences)
+
+    def _robust_json_extract(self, text: str) -> list:
+        """
+        Ekstrak JSON array dari response Gemini secara robust.
+        Handles: markdown code blocks, extra text, nested objects.
+        """
+        import re as _re, json as _json
+
+        # Hapus markdown fences
+        text = _re.sub(r'```[a-z]*\s*', '', text)
+        text = _re.sub(r'```', '', text)
+        text = text.strip()
+
+        # Strategi 1: Greedy — ambil dari [ pertama sampai ] paling akhir
+        m = _re.search(r'(\[[\s\S]*\])', text)
         if m:
             try:
-                tasks = _json.loads(m.group())
-                if isinstance(tasks, list) and tasks:
-                    return tasks
+                result = _json.loads(m.group(1))
+                if isinstance(result, list):
+                    return result
             except Exception:
                 pass
-        return [{"id": 1, "title": "Perbaiki masalah yang dilaporkan",
-                 "target_folder": "StarterGui", "target_file_hint": "unknown",
-                 "action": "fix_bug", "priority": "high", "detail": report}]
+
+        # Strategi 2: Ekstrak setiap { ... } object satu per satu
+        objects = []
+        depth = 0
+        start = -1
+        for i, c in enumerate(text):
+            if c == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0 and start != -1:
+                    obj_str = text[start:i+1]
+                    try:
+                        obj = _json.loads(obj_str)
+                        if isinstance(obj, dict) and obj.get("title"):
+                            objects.append(obj)
+                    except Exception:
+                        pass
+                    start = -1
+        if objects:
+            return objects
+
+        # Strategi 3: Coba parse seluruh text
+        try:
+            result = _json.loads(text)
+            if isinstance(result, list):
+                return result
+        except Exception:
+            pass
+
+        return []
+
+    def _fallback_task_extractor(self, report: str, sentences: list) -> list:
+        """
+        Rule-based task extractor — digunakan jika Gemini gagal.
+        Mendeteksi bug spesifik dari kata kunci dan membuat task terpisah.
+        """
+        import re as _re
+
+        BUG_PATTERNS = [
+            (
+                r'spawn|muncul.*tanah|tanah|gelap|tidak bisa bergerak|stuck|terjebak|mati.*join|join.*mati',
+                "ServerScriptService", "SPAWN_HANDLER", "high",
+                "Perbaiki spawn player: CharacterAdded event harus teleport player ke SpawnLocation yang berada di dalam space ship. Gunakan game.Workspace.SpawnLocation atau buat SpawnLocation baru di dalam model pesawat. Pastikan tidak ada objek yang menghalangi dan player tidak spawn di bawah tanah."
+            ),
+            (
+                r'tombol x|close.?button|x.*hud|hud.*x|tidak ada x|wajib.*x|x.*wajib',
+                "StarterGui", "HUD_CLOSE_BUTTON", "high",
+                "Tambahkan tombol X (CloseButton) ke SEMUA ScreenGui HUD. Setiap Frame utama di StarterGui harus punya TextButton bernama 'CloseButton' di pojok kanan atas (Position UDim2.new(1,-35,0,5), Size UDim2.new(0,30,0,30), Text='X', BackgroundColor3=Color3.fromRGB(220,50,50)). OnActivated: Frame.Visible = false."
+            ),
+            (
+                r'buy|sell|beli|jual|flea.?market|trading|tanpa item|item.*kosong|kosong.*item',
+                "StarterGui", "FLEA_MARKET_UI", "high",
+                "Perbaiki UI Flea Market: tombol Buy dan Sell hanya tampil jika inventory tidak kosong. Tambahkan validasi: if #LocalPlayer.Backpack:GetChildren() == 0 then BuySellFrame.Visible = false else BuySellFrame.Visible = true end. Tampilkan teks 'Inventory Kosong' jika tidak ada item."
+            ),
+            (
+                r'popup.*iklan|iklan.*popup|monetisasi|monetization|gamepass.*join|join.*gamepass|ads',
+                "StarterGui", "MONETIZATION_POPUP", "high",
+                "Buat popup monetisasi saat pemain join: ScreenGui 'MonetizationWelcome' muncul 2 detik setelah CharacterAdded. Isi: judul game, tawaran gamepass/premium, tombol 'Dapatkan Premium' (MarketplaceService:PromptGamePassPurchase), tombol 'Nanti X'. Animasi slide-in dari bawah."
+            ),
+            (
+                r'daily.?login|login.?harian|hadiah.?harian|1[.,]000.*dolar|dolar.*hari|reward.?harian|reset.*utc|00:00',
+                "ServerScriptService", "DAILY_LOGIN_SYSTEM", "medium",
+                "Buat sistem Daily Login Server: saat pemain join, cek DataStore['DailyLogin'][userId]. Jika belum login hari ini (os.time() - lastLogin > 86400 atau hari UTC berbeda), beri 1.000 Dolar (leaderstats.Dolar.Value += 1000) dan update timestamp. Kirim RemoteEvent ke client untuk tampilkan notifikasi reward."
+            ),
+            (
+                r'space.?ship|pesawat|luar.?angkasa|space.?station|kapal.*angkasa|angkasa.*kapal',
+                "ServerScriptService", "SPACE_SPAWN_CONFIG", "high",
+                "Konfigurasi spawn di space ship: cari model 'SpaceShip' atau 'Station' di Workspace. Buat SpawnLocation baru di dalam model tersebut (atau gunakan PrimaryPart sebagai referensi CFrame). CharacterAdded: player.Character.PrimaryPart.CFrame = SpaceShip.SpawnPoint.CFrame + Vector3.new(0,5,0)."
+            ),
+            (
+                r'hud.*muncul|muncul.*hud|hud.*show|tampil.*hud|hud.*tidak.*tampil',
+                "StarterGui", "HUD_VISIBILITY", "medium",
+                "Perbaiki visibilitas HUD saat join: pastikan semua ScreenGui yang diperlukan (health bar, ammo, minimap) langsung terlihat saat CharacterAdded. Gunakan LocalScript di StarterPlayerScripts untuk inisialisasi HUD. Jangan sembunyikan HUD di awal kecuali memang ada logika khusus."
+            ),
+        ]
+
+        tasks = []
+        report_lower = report.lower()
+        task_id = 1
+
+        for pattern, folder, file_hint, priority, detail in BUG_PATTERNS:
+            if _re.search(pattern, report_lower, flags=_re.IGNORECASE):
+                title = file_hint.replace('_', ' ').title()
+                tasks.append({
+                    "id": task_id,
+                    "title": f"Perbaiki: {title}",
+                    "target_folder": folder,
+                    "target_file_hint": file_hint,
+                    "action": "fix_bug",
+                    "priority": priority,
+                    "detail": detail,
+                })
+                task_id += 1
+
+        # Jika tidak ada pola cocok, buat task dari kalimat
+        if not tasks:
+            for i, sentence in enumerate(sentences[:6]):
+                if len(sentence) > 20:
+                    tasks.append({
+                        "id": i + 1,
+                        "title": f"Perbaiki: {sentence[:45]}",
+                        "target_folder": "StarterGui",
+                        "target_file_hint": "unknown",
+                        "action": "fix_bug",
+                        "priority": "high",
+                        "detail": sentence,
+                    })
+
+        return tasks if tasks else [{
+            "id": 1, "title": "Perbaiki semua bug yang dilaporkan",
+            "target_folder": "StarterGui", "target_file_hint": "unknown",
+            "action": "fix_bug", "priority": "high", "detail": report
+        }]
+
 
     def _build_status_board(self, tasks: list, statuses: dict, phase: str, summary: str = "") -> str:
         """Papan status Antigravity-style dalam format HTML."""
