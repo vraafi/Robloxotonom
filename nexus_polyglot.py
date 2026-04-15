@@ -433,7 +433,7 @@ class PolyglotSynthesizerAgent:
         full_input = f"[SYSTEM]:\n{system_prompt}\n\n[TASK]:\n{user_prompt}"
         command = [
             GEMINI_CLI_PATH,
-            "-m", "models/gemini-2.0-flash",  # Model TERPISAH dari Roblox agent (gemma-4-31b-it)
+            "-m", "models/gemma-4-26b-a4b-it",  # Model terpisah dari Roblox (gemma-4-31b-it), rate limit beda
             "-y",
             "-p", (
                 "Output HANYA kode murni yang langsung bisa dieksekusi. "
@@ -1043,7 +1043,7 @@ class TelegramPolyglotListener:
         """
         Panggil Gemini CLI khusus untuk percakapan chat.
         Model: gemini-3.1-flash-lite-preview (ringan & cepat, hemat rate limit).
-        Berbeda dari _call_gemini milik PolyglotSynthesizerAgent yang pakai gemini-2.0-flash.
+        Berbeda dari _call_gemini milik PolyglotSynthesizerAgent yang pakai gemma-4-26b-a4b-it.
         Rate limit TERPISAH dari Roblox AI agent (gemma-4-31b-it) sehingga tidak tabrakan.
         Prioritas key: GEMINI_TELEGRAM_KEY (eksklusif) → fallback ke pool agent.
         """
@@ -1065,7 +1065,7 @@ class TelegramPolyglotListener:
             "-p", "Jawab secara natural dan ringkas. Bukan kode, kecuali diminta.",
         ]
 
-        FALLBACK_MODEL = "models/gemini-2.0-flash"  # Fallback ke model terpisah dari Roblox
+        FALLBACK_MODEL = "models/gemma-4-26b-a4b-it"  # Fallback, model terpisah dari Roblox
         for attempt, model in enumerate([command[command.index("-m") + 1], FALLBACK_MODEL]):
             if attempt == 1:
                 # Ganti model ke fallback
@@ -1217,7 +1217,7 @@ class TelegramPolyglotListener:
         )
         try:
             # Gunakan model ringan khusus chat (gemini-3.1-flash-lite-preview)
-            # agar tidak bersaing rate limit dengan pipeline coding (gemma-4-31b-it)
+            # agar tidak bersaing rate limit dengan pipeline Roblox (gemma-4-31b-it) maupun Telegram coding (gemma-4-26b-a4b-it)
             reply = await self._call_gemini_chat(system_prompt, text)
             if reply and not reply.startswith("ERROR") and len(reply.strip()) > 5:
                 await self._send(chat_id, reply.strip())
