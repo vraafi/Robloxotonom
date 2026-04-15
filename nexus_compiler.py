@@ -20,7 +20,10 @@ class AbsoluteOmniValidator:
 
     @staticmethod
     def sanitize_luau_code(raw_luau_code: str) -> str:
-        code = re.sub(r'^\s*--.*$', '', raw_luau_code, flags=re.MULTILINE)
+        # 1. Hapus block comments --[[ ... ]] (bisa multi-line)
+        code = re.sub(r'--\[\[.*?\]\]', '', raw_luau_code, flags=re.DOTALL)
+        # 2. Hapus semua comments (full-line maupun inline): -- hingga akhir baris
+        code = re.sub(r'--[^\n]*', '', code)
         return code
 
     @staticmethod
