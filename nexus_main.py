@@ -692,7 +692,6 @@ async def run_orchestrator():
             total_tasks = len(task_queue)
 
             console_terminal_interface.print(
-            console_terminal_interface.print(
                 Panel(
                     f"[bold cyan]⚡ PARALLEL EXECUTION AKTIF\n"
                     f"({total_tasks} tasks × {len(ACTIVE_AGENTS)} agents dedicated — tidak antri)\n"
