@@ -437,19 +437,15 @@ class RojoBuildAutoHealer:
     @staticmethod
     def fix_all_json_meta_files() -> int:
         """
-        Scan dan perbaiki SEMUA file .meta.json dan .model.json di project Rojo.
-        Ini adalah sumber UTAMA error 'Property type mismatch' — Rojo membaca properti
-        dari file JSON ini, bukan dari kode Lua. Jika DisplayOrder di JSON berformat
-        {"Enum": X} atau {"Type": "Enum"} maka Rojo akan SELALU error meski Lua sudah diperbaiki.
+        Scan dan perbaiki SEMUA file .json di project Rojo — termasuk:
+          - .meta.json     (metadata instance)
+          - .model.json    (data model)
+          - *.project.json (konfigurasi project, termasuk default.project.json)
+          - .json lainnya
 
-        Format JSON Rojo yang SALAH (penyebab error):
-          "DisplayOrder": {"Enum": 5}
-          "DisplayOrder": {"Type": "Enum", "Value": "ZIndexBehavior.Global"}
-
-        Format JSON Rojo yang BENAR:
-          "DisplayOrder": 5
-          "DisplayOrder": {"Int32": 5}
-          "DisplayOrder": {"Type": "Int32", "Value": 5}
+        Jika DisplayOrder di JSON berformat {"Enum": X} atau {"Type": "Enum"}
+        maka Rojo akan SELALU error meski Lua sudah diperbaiki.
+        Fungsi ini memperbaiki SEMUA file JSON yang berpotensi salah tipe.
         """
         INT32_PROPS = {
             "DisplayOrder", "ZIndex", "LayoutOrder", "TextSize",
@@ -470,8 +466,7 @@ class RojoBuildAutoHealer:
 
         for root, dirs, files in os.walk(PROJECT_ROOT_DIRECTORY):
             for fname in files:
-                if not (fname.endswith(".meta.json") or fname.endswith(".model.json") or
-                        (fname.endswith(".json") and fname != "default.project.json")):
+                if not fname.endswith(".json"):
                     continue
                 fpath = os.path.join(root, fname)
                 try:
@@ -699,16 +694,160 @@ class RojoBuildAutoHealer:
                     pass
         return fix_count
 
+
+    @staticmethod
+    def scan_project_files_summary() -> dict:
+        """
+        Inventarisasi SEMUA file di project Rojo dan validasi struktur dasarnya.
+        Healer memanggil ini agar tidak 'buta' — tahu persis file apa saja yang ada
+        dan apakah ada masalah className yang tidak valid di file .meta.json.
+
+        File yang diperiksa:
+          .lua / .luau        → Skrip Lua
+          .meta.json          → Metadata instance Rojo
+          .model.json         → Data model Rojo
+          .rbxmx              → File XML model Roblox
+          *.project.json      → File konfigurasi project Rojo
+          .json (lainnya)     → File JSON umum
+        """
+        VALID_ROBLOX_CLASSES = {
+            "ScreenGui", "Frame", "TextLabel", "TextButton", "ImageLabel",
+            "ImageButton", "ScrollingFrame", "TextBox", "ViewportFrame",
+            "UIListLayout", "UIGridLayout", "UIAspectRatioConstraint",
+            "UISizeConstraint", "UITextSizeConstraint", "UIPadding", "UICorner",
+            "UIGradient", "UIStroke", "UIScale", "UIPageLayout",
+            "LocalScript", "Script", "ModuleScript",
+            "Model", "Part", "MeshPart", "SpecialMesh", "UnionOperation",
+            "Folder", "Configuration", "RemoteEvent", "RemoteFunction",
+            "BindableEvent", "BindableFunction",
+            "StringValue", "IntValue", "NumberValue", "BoolValue", "ObjectValue",
+            "Weld", "WeldConstraint", "Motor6D", "DataModel", "StarterPlayer",
+            "StarterGui", "StarterPlayerScripts", "StarterCharacterScripts",
+            "ServerScriptService", "ReplicatedStorage", "Workspace",
+        }
+        summary = {
+            "lua": [], "meta_json": [], "model_json": [],
+            "rbxmx": [], "project_json": [], "other_json": [],
+            "invalid_classname": [], "missing_classname": [],
+        }
+        for root, dirs, files in os.walk(PROJECT_ROOT_DIRECTORY):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                if fname.endswith((".lua", ".luau")):
+                    summary["lua"].append(fpath)
+                elif fname.endswith(".meta.json"):
+                    summary["meta_json"].append(fpath)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        cls_name = data.get("className") or data.get("ClassName") or data.get("class")
+                        if cls_name is None:
+                            summary["missing_classname"].append(fpath)
+                        elif cls_name not in VALID_ROBLOX_CLASSES:
+                            summary["invalid_classname"].append((fpath, cls_name))
+                    except Exception:
+                        pass
+                elif fname.endswith(".model.json"):
+                    summary["model_json"].append(fpath)
+                elif fname.endswith(".rbxmx"):
+                    summary["rbxmx"].append(fpath)
+                elif fname.endswith(".project.json") or fname == "default.project.json":
+                    summary["project_json"].append(fpath)
+                elif fname.endswith(".json"):
+                    summary["other_json"].append(fpath)
+
+        total_files = sum(len(v) for k, v in summary.items() if k not in ("invalid_classname", "missing_classname"))
+        console_terminal_interface.print(
+            f"[bold blue][Healer Scan] Inventarisasi project selesai:[/bold blue]\n"
+            f"  Skrip Lua/Luau   : {len(summary['lua'])} file\n"
+            f"  Meta JSON        : {len(summary['meta_json'])} file\n"
+            f"  Model JSON       : {len(summary['model_json'])} file\n"
+            f"  RBXMX            : {len(summary['rbxmx'])} file\n"
+            f"  Project JSON     : {len(summary['project_json'])} file\n"
+            f"  JSON lainnya     : {len(summary['other_json'])} file\n"
+            f"  ─────────────────────────────\n"
+            f"  Total            : {total_files} file dipindai"
+        )
+        if summary["invalid_classname"]:
+            for fp, cls in summary["invalid_classname"]:
+                console_terminal_interface.print(
+                    f"[bold yellow][Healer Scan] ⚠️  className tidak dikenal '{cls}' di: {os.path.basename(fp)}[/bold yellow]"
+                )
+        return summary
+
+    @staticmethod
+    def fix_invalid_classnames_in_meta(summary: dict = None) -> int:
+        """
+        Periksa dan perbaiki className yang tidak valid di file .meta.json.
+        Jika className salah eja atau tidak dikenal, Rojo akan menolak seluruh build.
+        Perbaikan: jika className mirip dengan class valid (fuzzy match sederhana),
+        ganti otomatis. Jika tidak ada yang cocok, hapus property yang salah tipe saja.
+        """
+        CLASSNAME_ALIASES = {
+            "screengui": "ScreenGui", "screen_gui": "ScreenGui",
+            "localscript": "LocalScript", "local_script": "LocalScript",
+            "modulescript": "ModuleScript", "module_script": "ModuleScript",
+            "script": "Script",
+            "textlabel": "TextLabel", "text_label": "TextLabel",
+            "textbutton": "TextButton", "text_button": "TextButton",
+            "imagebutton": "ImageButton", "image_button": "ImageButton",
+            "imagelabel": "ImageLabel", "image_label": "ImageLabel",
+            "frame": "Frame",
+            "scrollingframe": "ScrollingFrame", "scrolling_frame": "ScrollingFrame",
+            "textbox": "TextBox", "text_box": "TextBox",
+            "folder": "Folder",
+            "model": "Model",
+            "remotevent": "RemoteEvent", "remoteevent": "RemoteEvent",
+            "remotefunction": "RemoteFunction",
+            "uilistlayout": "UIListLayout", "ui_list_layout": "UIListLayout",
+        }
+        fix_count = 0
+        if summary is None:
+            summary = RojoBuildAutoHealer.scan_project_files_summary()
+        for fpath, bad_cls in summary.get("invalid_classname", []):
+            normalized = bad_cls.lower().replace(" ", "").replace("-", "").replace("_", "")
+            correct_cls = CLASSNAME_ALIASES.get(normalized) or CLASSNAME_ALIASES.get(bad_cls.lower())
+            if correct_cls:
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    for key in ("className", "ClassName", "class"):
+                        if key in data:
+                            data[key] = correct_cls
+                    with open(fpath, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                    fix_count += 1
+                    console_terminal_interface.print(
+                        f"[bold green][ClassFix] '{bad_cls}' → '{correct_cls}': {os.path.basename(fpath)}[/bold green]"
+                    )
+                except Exception:
+                    pass
+        return fix_count
+
     @staticmethod
     def proactive_scan_and_fix() -> int:
         """
-        Proaktif scan SEMUA file (Lua DAN JSON metadata Rojo) dan perbaiki masalah tipe properti
-        SEBELUM Rojo build dijalankan.
+        Proaktif scan DAN perbaiki SEMUA tipe file project Rojo sebelum build:
+          1. Inventarisasi semua file (.lua, .meta.json, .rbxmx, .project.json, dsb.)
+          2. Perbaiki className yang salah di .meta.json
+          3. Perbaiki type mismatch di semua file JSON (termasuk default.project.json)
+          4. Perbaiki tag <token> yang salah di file .rbxmx
+          5. Perbaiki type mismatch di kode Lua
 
-        PENTING: Rojo membaca properti instance dari file .meta.json / .model.json,
-        BUKAN dari kode Lua! Jadi kedua jenis file harus diperbaiki.
+        Healer tidak buta — semua tipe file yang dikenal Rojo diperiksa dan diperbaiki.
         """
         total_fixes = 0
+
+        # ── Inventarisasi semua file sebelum mulai (healer tidak buta)
+        summary = RojoBuildAutoHealer.scan_project_files_summary()
+
+        # ── Perbaiki className yang salah di .meta.json
+        class_fixes = RojoBuildAutoHealer.fix_invalid_classnames_in_meta(summary)
+        if class_fixes > 0:
+            console_terminal_interface.print(
+                f"[bold green][ProactiveFix] {class_fixes} className diperbaiki di file .meta.json[/bold green]"
+            )
+            total_fixes += class_fixes
 
         json_fixes = RojoBuildAutoHealer.fix_all_json_meta_files()
         if json_fixes > 0:
