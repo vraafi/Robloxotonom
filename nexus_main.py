@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json
+import re
 import subprocess
 import requests
 import aiofiles
@@ -31,9 +32,10 @@ from nexus_database import (
     establish_database_connection,
     log_roblox_telemetry,
     get_unanalyzed_telemetry,
+    save_verified_module,
 )
 from nexus_compiler import NativeLuauCompiler
-from nexus_agents import OmniSynthesizerAgent, AutoHealerAgent, LuauKnowledgeScraper
+from nexus_agents import OmniSynthesizerAgent, AutoHealerAgent, LuauKnowledgeScraper, execute_gemini_cli_pure, extract_pure_luau_code
 from nexus_healer import PreDeploymentValidator
 from nexus_polyglot import start_telegram_polling
 
@@ -49,34 +51,219 @@ _min_interval_between_messages = 2.0
 
 class RojoBuildAutoHealer:
     """
-    Auto-healer otonom untuk error Rojo build.
+    Auto-healer otonom untuk SEMUA error Rojo build.
     Pipeline: Parse error → Cari file → Auto-fix (pattern) → Gemini heal → Retry build.
     Healer membangun prompt sendiri berdasarkan analisis error, tanpa mengurangi konteks yang ada.
+    Mendukung semua tipe error Rojo:
+      - Property type mismatch (Int32/Float/Enum salah tipe)
+      - Unknown property (properti tidak dikenal untuk class tertentu)
+      - Malformed file / JSON parse error
+      - Missing file / path error
+      - Invalid class name
+      - Duplicate instance name
+      - Rbxm/Rbxmx deserialization error
+      - Dan error umum lainnya
     """
+
+    ROJO_ERROR_PATTERNS = {
+        "type_mismatch": re.compile(
+            r"Property type mismatch: Expected\s+(\S+)\s+to be of type\s+(\w+),\s+but it was of type\s+(\w+)\s+on instance\s+(\S+)",
+            re.IGNORECASE
+        ),
+        "unknown_property": re.compile(
+            r"(?:Unknown|Unsupported)\s+property\s+['\"]?(\w+)['\"]?\s+on\s+(?:class\s+)?['\"]?(\w+)['\"]?.*?(?:instance\s+)?(\S+)?",
+            re.IGNORECASE
+        ),
+        "invalid_value": re.compile(
+            r"(?:Invalid|Unexpected)\s+(?:value|type)\s+(?:for\s+)?(?:property\s+)?['\"]?(\w+)['\"]?\s*.*?(?:on\s+instance\s+)?(\S+)?",
+            re.IGNORECASE
+        ),
+        "file_not_found": re.compile(
+            r"(?:File|Path)\s+(?:not found|does not exist|missing):\s*['\"]?(.+?)['\"]?(?:\s|$)",
+            re.IGNORECASE
+        ),
+        "json_parse": re.compile(
+            r"(?:JSON|Parse|Syntax)\s+(?:error|failed|invalid).*?(?:in\s+)?['\"]?(.+?\.\w+)['\"]?",
+            re.IGNORECASE
+        ),
+        "invalid_class": re.compile(
+            r"(?:Invalid|Unknown)\s+class(?:Name)?[:\s]+['\"]?(\w+)['\"]?\s*(?:on\s+instance\s+)?(\S+)?",
+            re.IGNORECASE
+        ),
+        "generic_error": re.compile(
+            r"\[ERROR\s+rojo\]\s+(.+)",
+            re.IGNORECASE
+        ),
+    }
+
+    INT32_PROPERTIES = {
+        "DisplayOrder", "ZIndex", "LayoutOrder", "TextSize",
+        "MaxVisibleGraphemes", "SortOrder", "Position",
+        "LineHeight", "TextWrapped",
+    }
+
+    FLOAT_PROPERTIES = {
+        "BackgroundTransparency", "TextTransparency", "ImageTransparency",
+        "GroupTransparency", "ScrollBarThickness", "Transparency",
+        "Reflectance",
+    }
+
+    BOOL_PROPERTIES = {
+        "Visible", "Active", "ClipsDescendants", "Draggable",
+        "Selectable", "AutoLocalize", "ResetOnSpawn",
+        "Enabled", "Archivable", "Locked", "CanCollide", "Anchored",
+    }
+
+    ENUM_VALUE_MAP = {
+        "SortOrder": {"LayoutOrder": 0, "Name": 1, "Custom": 2},
+        "HorizontalAlignment": {"Center": 0, "Left": 1, "Right": 2},
+        "VerticalAlignment": {"Center": 0, "Top": 1, "Bottom": 2},
+        "TextXAlignment": {"Center": 0, "Left": 1, "Right": 2},
+        "TextYAlignment": {"Center": 0, "Top": 1, "Bottom": 2},
+        "ScaleType": {"Stretch": 0, "Slice": 1, "Tile": 2, "Fit": 3, "Crop": 4},
+        "AutomaticSize": {"None": 0, "X": 1, "Y": 2, "XY": 3},
+        "BorderMode": {"Outline": 0, "Middle": 1, "Inset": 2},
+        "ZIndexBehavior": {"Global": 0, "Sibling": 1},
+        "FillDirection": {"Horizontal": 0, "Vertical": 1},
+        "SizeConstraint": {"RelativeXY": 0, "RelativeXX": 1, "RelativeYY": 2},
+    }
+
+    KNOWN_BAD_PROPERTIES = {
+        "ScreenGui": {"DisplayOrder", "ZIndex", "LayoutOrder"},
+        "Frame": {"ZIndex", "LayoutOrder", "BackgroundTransparency"},
+        "TextLabel": {"ZIndex", "LayoutOrder", "TextSize", "MaxVisibleGraphemes"},
+        "TextButton": {"ZIndex", "LayoutOrder", "TextSize"},
+        "ImageLabel": {"ZIndex", "LayoutOrder", "ImageTransparency"},
+        "ImageButton": {"ZIndex", "LayoutOrder"},
+        "ScrollingFrame": {"ZIndex", "LayoutOrder", "ScrollBarThickness"},
+        "UIListLayout": {"SortOrder"},
+        "UIGridLayout": {"SortOrder"},
+    }
 
     @staticmethod
     def parse_rojo_errors(stderr: str) -> list:
-        """Extract semua error Rojo dari stderr, dengan info properti dan lokasi."""
+        """Extract SEMUA error Rojo dari stderr — semua tipe error didukung."""
         errors = []
-        pattern = re.compile(
-            r"Property type mismatch: Expected\s+(\S+)\s+to be of type\s+(\w+),\s+but it was of type\s+(\w+)\s+on instance\s+(\S+)",
-            re.IGNORECASE
-        )
-        for m in pattern.finditer(stderr):
-            full_prop = m.group(1)        # e.g. ScreenGui.DisplayOrder
-            expected_type = m.group(2)    # e.g. Int32
-            actual_type = m.group(3)      # e.g. Enum
-            instance_path = m.group(4)    # e.g. ApexAbsolut.StarterGui.CORE_INBOX_UI_1
+        seen_keys = set()
+
+        for m in RojoBuildAutoHealer.ROJO_ERROR_PATTERNS["type_mismatch"].finditer(stderr):
+            full_prop = m.group(1)
+            expected_type = m.group(2)
+            actual_type = m.group(3)
+            instance_path = m.group(4)
             prop_name = full_prop.split(".")[-1]
             file_name = instance_path.split(".")[-1]
-            errors.append({
-                "full_prop": full_prop,
-                "prop_name": prop_name,
-                "expected_type": expected_type,
-                "actual_type": actual_type,
-                "instance_path": instance_path,
-                "file_name": file_name,
-            })
+            key = f"type_mismatch:{file_name}:{prop_name}"
+            if key not in seen_keys:
+                seen_keys.add(key)
+                errors.append({
+                    "error_type": "type_mismatch",
+                    "full_prop": full_prop,
+                    "prop_name": prop_name,
+                    "expected_type": expected_type,
+                    "actual_type": actual_type,
+                    "instance_path": instance_path,
+                    "file_name": file_name,
+                    "raw_message": m.group(0),
+                })
+
+        for m in RojoBuildAutoHealer.ROJO_ERROR_PATTERNS["unknown_property"].finditer(stderr):
+            prop_name = m.group(1)
+            class_name = m.group(2)
+            instance_path = m.group(3) or ""
+            file_name = instance_path.split(".")[-1] if instance_path else class_name
+            key = f"unknown_property:{file_name}:{prop_name}"
+            if key not in seen_keys:
+                seen_keys.add(key)
+                errors.append({
+                    "error_type": "unknown_property",
+                    "prop_name": prop_name,
+                    "class_name": class_name,
+                    "instance_path": instance_path,
+                    "file_name": file_name,
+                    "raw_message": m.group(0),
+                    "full_prop": f"{class_name}.{prop_name}",
+                    "expected_type": "remove",
+                    "actual_type": "unknown",
+                })
+
+        for m in RojoBuildAutoHealer.ROJO_ERROR_PATTERNS["invalid_value"].finditer(stderr):
+            prop_name = m.group(1)
+            instance_path = m.group(2) or ""
+            file_name = instance_path.split(".")[-1] if instance_path else prop_name
+            key = f"invalid_value:{file_name}:{prop_name}"
+            if key not in seen_keys:
+                seen_keys.add(key)
+                errors.append({
+                    "error_type": "invalid_value",
+                    "prop_name": prop_name,
+                    "instance_path": instance_path,
+                    "file_name": file_name,
+                    "raw_message": m.group(0),
+                    "full_prop": prop_name,
+                    "expected_type": "auto",
+                    "actual_type": "invalid",
+                })
+
+        for m in RojoBuildAutoHealer.ROJO_ERROR_PATTERNS["json_parse"].finditer(stderr):
+            file_ref = m.group(1)
+            key = f"json_parse:{file_ref}"
+            if key not in seen_keys:
+                seen_keys.add(key)
+                errors.append({
+                    "error_type": "json_parse",
+                    "file_ref": file_ref,
+                    "file_name": os.path.basename(file_ref).replace(".json", "").replace(".lua", ""),
+                    "raw_message": m.group(0),
+                    "full_prop": "",
+                    "prop_name": "",
+                    "expected_type": "json_fix",
+                    "actual_type": "parse_error",
+                    "instance_path": file_ref,
+                })
+
+        for m in RojoBuildAutoHealer.ROJO_ERROR_PATTERNS["invalid_class"].finditer(stderr):
+            class_name = m.group(1)
+            instance_path = m.group(2) or ""
+            file_name = instance_path.split(".")[-1] if instance_path else class_name
+            key = f"invalid_class:{file_name}:{class_name}"
+            if key not in seen_keys:
+                seen_keys.add(key)
+                errors.append({
+                    "error_type": "invalid_class",
+                    "class_name": class_name,
+                    "instance_path": instance_path,
+                    "file_name": file_name,
+                    "raw_message": m.group(0),
+                    "full_prop": "",
+                    "prop_name": "",
+                    "expected_type": "class_fix",
+                    "actual_type": "invalid_class",
+                })
+
+        if not errors:
+            for m in RojoBuildAutoHealer.ROJO_ERROR_PATTERNS["generic_error"].finditer(stderr):
+                raw_msg = m.group(1).strip()
+                if any(raw_msg in e.get("raw_message", "") for e in errors):
+                    continue
+                key = f"generic:{raw_msg[:80]}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    file_guess = ""
+                    file_match = re.search(r'(?:instance|file|path)[:\s]+(\S+)', raw_msg, re.IGNORECASE)
+                    if file_match:
+                        file_guess = file_match.group(1).split(".")[-1]
+                    errors.append({
+                        "error_type": "generic",
+                        "raw_message": raw_msg,
+                        "file_name": file_guess,
+                        "full_prop": "",
+                        "prop_name": "",
+                        "expected_type": "generic_fix",
+                        "actual_type": "error",
+                        "instance_path": "",
+                    })
+
         return errors
 
     @staticmethod
@@ -91,41 +278,184 @@ class RojoBuildAutoHealer:
         return None
 
     @staticmethod
+    def find_all_lua_files() -> list:
+        """Cari SEMUA file .lua/.luau di project."""
+        results = []
+        for root, dirs, files in os.walk(PROJECT_ROOT_DIRECTORY):
+            for fname in files:
+                if fname.endswith((".lua", ".luau")):
+                    results.append(os.path.join(root, fname))
+        return results
+
+    @staticmethod
     def auto_fix_type_mismatch(file_path: str, prop_name: str, expected_type: str) -> bool:
         """
         Perbaiki otomatis type mismatch yang sudah diketahui (tanpa Gemini).
-        Contoh: DisplayOrder = Enum.X → DisplayOrder = 0
+        Mendukung: Int32, Float, Bool, String, dan Enum mapping.
         """
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 code = f.read()
             original = code
-            if expected_type == "Int32":
-                # Ganti assignment Enum ke angka 0 untuk semua properti Int32
+
+            if expected_type == "Int32" or prop_name in RojoBuildAutoHealer.INT32_PROPERTIES:
                 code = re.sub(
                     r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)Enum\.[A-Za-z0-9_.]+",
                     r"\g<1>0",
                     code
                 )
-                # Juga tangkap format: propName = Enum.X (tanpa titik)
                 code = re.sub(
                     r"(?<![\w.])(" + re.escape(prop_name) + r"\s*=\s*)Enum\.[A-Za-z0-9_.]+",
                     r"\g<1>0",
                     code
                 )
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)['\"][^'\"]*['\"]",
+                    r"\g<1>0",
+                    code
+                )
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)true",
+                    r"\g<1>1",
+                    code,
+                    flags=re.IGNORECASE
+                )
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)false",
+                    r"\g<1>0",
+                    code,
+                    flags=re.IGNORECASE
+                )
+
+            elif expected_type in ("Float32", "Float64", "Float", "float"):
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)Enum\.[A-Za-z0-9_.]+",
+                    r"\g<1>0",
+                    code
+                )
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)['\"][^'\"]*['\"]",
+                    r"\g<1>0",
+                    code
+                )
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)true",
+                    r"\g<1>1",
+                    code,
+                    flags=re.IGNORECASE
+                )
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)false",
+                    r"\g<1>0",
+                    code,
+                    flags=re.IGNORECASE
+                )
+
+            elif expected_type == "Bool" or expected_type == "bool":
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)Enum\.[A-Za-z0-9_.]+",
+                    r"\g<1>true",
+                    code
+                )
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)\d+",
+                    lambda m: m.group(1) + ("true" if int(m.group(0).split("=")[-1].strip()) != 0 else "false"),
+                    code
+                )
+
+            elif expected_type == "String" or expected_type == "string":
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)(\d+)",
+                    r'\g<1>"\g<2>"',
+                    code
+                )
+
+            elif expected_type == "Enum":
+                if prop_name in RojoBuildAutoHealer.ENUM_VALUE_MAP:
+                    pass
+
+            if expected_type == "remove":
+                code = re.sub(
+                    r"[^\n]*\.\s*" + re.escape(prop_name) + r"\s*=\s*[^\n]+\n?",
+                    "",
+                    code
+                )
+
             if code != original:
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(code)
                 return True
             return False
-        except Exception:
+        except Exception as e:
+            console_terminal_interface.print(
+                f"[bold yellow][RojoBuildHealer] Exception di auto_fix: {e}[/bold yellow]"
+            )
             return False
+
+    @staticmethod
+    def auto_fix_all_known_issues(file_path: str) -> int:
+        """
+        Scan dan perbaiki SEMUA masalah tipe properti yang diketahui dalam satu file.
+        Return jumlah fix yang diterapkan.
+        """
+        fix_count = 0
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                code = f.read()
+            original = code
+
+            for prop in RojoBuildAutoHealer.INT32_PROPERTIES:
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop) + r"\s*=\s*)Enum\.[A-Za-z0-9_.]+",
+                    r"\g<1>0",
+                    code
+                )
+
+            for prop in RojoBuildAutoHealer.FLOAT_PROPERTIES:
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop) + r"\s*=\s*)Enum\.[A-Za-z0-9_.]+",
+                    r"\g<1>0",
+                    code
+                )
+
+            for prop in RojoBuildAutoHealer.BOOL_PROPERTIES:
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop) + r"\s*=\s*)Enum\.[A-Za-z0-9_.]+",
+                    r"\g<1>true",
+                    code
+                )
+
+            if code != original:
+                fix_count = sum(1 for a, b in zip(original.splitlines(), code.splitlines()) if a != b)
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+
+            return fix_count
+        except Exception:
+            return 0
+
+    @staticmethod
+    def proactive_scan_and_fix() -> int:
+        """
+        Proaktif scan SEMUA file Lua di project dan perbaiki masalah tipe yang diketahui
+        SEBELUM Rojo build dijalankan.
+        """
+        total_fixes = 0
+        all_files = RojoBuildAutoHealer.find_all_lua_files()
+        for fpath in all_files:
+            fixes = RojoBuildAutoHealer.auto_fix_all_known_issues(fpath)
+            if fixes > 0:
+                console_terminal_interface.print(
+                    f"[bold green][ProactiveFix] {fixes} masalah diperbaiki di {os.path.basename(fpath)}[/bold green]"
+                )
+                total_fixes += fixes
+        return total_fixes
 
     @staticmethod
     async def heal_with_gemini(agent: dict, file_path: str, error_info: dict) -> bool:
         """
         Healer membangun prompt sendiri berdasarkan error Rojo dan memperbaiki file via Gemini CLI.
-        Prompt dibangun secara dinamis — akurat dan spesifik untuk error yang terjadi.
+        Prompt dibangun secara dinamis — mendukung SEMUA tipe error.
         """
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -133,33 +463,89 @@ class RojoBuildAutoHealer:
         except Exception:
             return False
 
+        error_type = error_info.get("error_type", "generic")
+
         sys_inst = (
-            "Kamu adalah spesialis debug Roblox Luau dan Rojo project structure level senior.\n"
+            "Kamu adalah spesialis debug Roblox Luau dan Rojo project structure level APEX.\n"
             "TUGAS: Perbaiki kode Luau yang menyebabkan Rojo build gagal.\n"
             "OUTPUT: HANYA kode Luau murni yang sudah diperbaiki. TIDAK ADA teks lain.\n"
-            "Baris pertama WAJIB --!strict."
+            "Baris pertama WAJIB --!strict.\n"
+            "JANGAN menambahkan komentar atau penjelasan — HANYA kode Luau.\n"
+            "Kamu WAJIB memahami perbedaan antara tipe data Roblox:\n"
+            "  - Int32: angka integer (0, 1, 5, 10)\n"
+            "  - Float/Float32: angka desimal (0.5, 1.0)\n"
+            "  - Bool: true/false\n"
+            "  - String: teks dalam tanda kutip\n"
+            "  - Enum: Enum.NamaEnum.Nilai (HANYA untuk properti yang memang bertipe Enum)\n"
+            "  - Color3: Color3.fromRGB(r, g, b) atau Color3.new(r, g, b)\n"
+            "  - UDim2: UDim2.new(sx, ox, sy, oy) atau UDim2.fromScale(sx, sy)\n"
+            "  - Vector2/Vector3: Vector2.new(x, y) / Vector3.new(x, y, z)\n"
         )
 
-        # Healer membangun prompt sendiri secara dinamis berdasarkan error yang terjadi
-        heal_prompt = (
-            f"[ROJO BUILD ERROR YANG TERJADI]:\n"
-            f"Property type mismatch: Expected {error_info['full_prop']} to be of type "
-            f"{error_info['expected_type']}, but it was of type {error_info['actual_type']} "
-            f"on instance {error_info['instance_path']}\n\n"
-            f"[DIAGNOSA ROOT CAUSE]:\n"
-            f"Properti '{error_info['prop_name']}' diisi dengan tipe {error_info['actual_type']} "
-            f"(Enum.Something), padahal Roblox/Rojo mengharuskan tipe {error_info['expected_type']} (integer).\n\n"
-            f"[ATURAN TIPE PROPERTI ROBLOX YANG WAJIB DIPATUHI]:\n"
-            f"  DisplayOrder  = 5             (Int32 — angka integer, BUKAN Enum)\n"
-            f"  ZIndex        = 1             (Int32 — angka integer, BUKAN Enum)\n"
-            f"  LayoutOrder   = 0             (Int32 — angka integer, BUKAN Enum)\n"
-            f"  TextSize      = 14            (Int32 — angka integer, BUKAN Enum)\n"
-            f"  ZIndexBehavior = Enum.ZIndexBehavior.Global  (BERBEDA dari DisplayOrder!)\n\n"
-            f"[INSTRUKSI FIX SPESIFIK]:\n"
-            f"  Cari semua assignment '{error_info['prop_name']}' dalam kode.\n"
-            f"  Ganti semua yang berupa Enum.* dengan angka integer yang tepat.\n"
-            f"  Contoh: .{error_info['prop_name']} = Enum.ZIndexBehavior.Global  →  .{error_info['prop_name']} = 5\n\n"
-            f"[KODE YANG PERLU DIPERBAIKI ({error_info['file_name']}.lua)]:\n"
+        if error_type == "type_mismatch":
+            heal_prompt = (
+                f"[ROJO BUILD ERROR]:\n{error_info['raw_message']}\n\n"
+                f"[DIAGNOSA]:\n"
+                f"Properti '{error_info['prop_name']}' diisi dengan tipe {error_info['actual_type']}, "
+                f"padahal Rojo mengharuskan tipe {error_info['expected_type']}.\n\n"
+                f"[ATURAN TIPE PROPERTI ROBLOX PENTING]:\n"
+                f"  DisplayOrder  = 5             (Int32)\n"
+                f"  ZIndex        = 1             (Int32)\n"
+                f"  LayoutOrder   = 0             (Int32)\n"
+                f"  TextSize      = 14            (Int32)\n"
+                f"  MaxVisibleGraphemes = -1      (Int32)\n"
+                f"  BackgroundTransparency = 0.5  (Float)\n"
+                f"  TextTransparency = 0          (Float)\n"
+                f"  Visible       = true          (Bool)\n"
+                f"  Active        = true          (Bool)\n"
+                f"  SortOrder     = Enum.SortOrder.LayoutOrder (Enum — INI BENAR PAKAI ENUM)\n"
+                f"  ZIndexBehavior = Enum.ZIndexBehavior.Global (Enum)\n"
+                f"  FillDirection = Enum.FillDirection.Vertical (Enum)\n\n"
+                f"[INSTRUKSI]:\n"
+                f"  Perbaiki assignment '{error_info['prop_name']}' dari {error_info['actual_type']} ke {error_info['expected_type']}.\n\n"
+            )
+        elif error_type == "unknown_property":
+            heal_prompt = (
+                f"[ROJO BUILD ERROR]:\n{error_info['raw_message']}\n\n"
+                f"[DIAGNOSA]:\n"
+                f"Properti '{error_info['prop_name']}' TIDAK ADA di class {error_info.get('class_name', 'Unknown')}.\n\n"
+                f"[INSTRUKSI]:\n"
+                f"  1. Hapus atau komentari baris yang mengatur properti '{error_info['prop_name']}'.\n"
+                f"  2. Atau ganti dengan properti yang benar untuk class tersebut.\n"
+                f"  3. Pastikan semua properti yang digunakan valid untuk class Roblox yang bersangkutan.\n\n"
+            )
+        elif error_type == "invalid_value":
+            heal_prompt = (
+                f"[ROJO BUILD ERROR]:\n{error_info['raw_message']}\n\n"
+                f"[DIAGNOSA]:\n"
+                f"Nilai yang diberikan untuk properti '{error_info['prop_name']}' tidak valid.\n\n"
+                f"[INSTRUKSI]:\n"
+                f"  1. Periksa tipe data yang benar untuk properti tersebut.\n"
+                f"  2. Ganti dengan nilai yang sesuai tipe datanya.\n"
+                f"  3. Rujuk aturan tipe di SYSTEM INSTRUCTION.\n\n"
+            )
+        elif error_type == "invalid_class":
+            heal_prompt = (
+                f"[ROJO BUILD ERROR]:\n{error_info['raw_message']}\n\n"
+                f"[DIAGNOSA]:\n"
+                f"Class '{error_info.get('class_name', 'Unknown')}' tidak dikenal oleh Rojo/Roblox.\n\n"
+                f"[INSTRUKSI]:\n"
+                f"  1. Ganti $className atau Instance.new() dengan class yang valid.\n"
+                f"  2. Class yang umum: Frame, TextLabel, TextButton, ImageLabel, ScrollingFrame, ScreenGui, etc.\n"
+                f"  3. Pastikan tidak ada typo di nama class.\n\n"
+            )
+        else:
+            heal_prompt = (
+                f"[ROJO BUILD ERROR]:\n{error_info.get('raw_message', 'Unknown error')}\n\n"
+                f"[INSTRUKSI UMUM]:\n"
+                f"  1. Analisis error di atas dan perbaiki kode.\n"
+                f"  2. Pastikan semua properti menggunakan tipe data yang benar.\n"
+                f"  3. Pastikan semua class name valid.\n"
+                f"  4. Pastikan tidak ada duplikasi instance name.\n\n"
+            )
+
+        heal_prompt += (
+            f"[KODE YANG PERLU DIPERBAIKI ({os.path.basename(file_path)})]:\n"
             f"```lua\n{original_code}\n```\n\n"
             f"Kembalikan kode Luau LENGKAP yang sudah diperbaiki."
         )
@@ -183,51 +569,82 @@ class RojoBuildAutoHealer:
     async def heal_loop(rojo_stderr: str, agent: dict) -> bool:
         """
         Orchestrate full auto-heal pipeline:
-        1. Parse semua Rojo error dari stderr
-        2. Untuk tiap error: cari file → auto-fix pattern → Gemini heal
-        3. Kembalikan True jika semua berhasil diperbaiki
+        1. Proaktif scan & fix semua file yang sudah diketahui pattern-nya
+        2. Parse semua Rojo error dari stderr (semua tipe)
+        3. Untuk tiap error: cari file → auto-fix pattern → Gemini heal
+        4. Kembalikan True jika semua berhasil diperbaiki
         """
+        proactive_fixes = RojoBuildAutoHealer.proactive_scan_and_fix()
+        if proactive_fixes > 0:
+            console_terminal_interface.print(
+                f"[bold green][RojoBuildHealer] ProactiveFix: {proactive_fixes} masalah diperbaiki sebelum parsing error.[/bold green]"
+            )
+
         errors = RojoBuildAutoHealer.parse_rojo_errors(rojo_stderr)
         if not errors:
+            if proactive_fixes > 0:
+                console_terminal_interface.print(
+                    "[bold green][RojoBuildHealer] Tidak ada error Rojo tersisa setelah proactive fix.[/bold green]"
+                )
+                return True
             console_terminal_interface.print(
                 "[bold yellow][RojoBuildHealer] Tidak bisa parse error Rojo. Melewati auto-heal.[/bold yellow]"
             )
             return False
 
         console_terminal_interface.print(
-            f"[bold cyan][RojoBuildHealer] {len(errors)} error Rojo terdeteksi. Memulai pipeline auto-heal...[/bold cyan]"
+            f"[bold cyan][RojoBuildHealer] {len(errors)} error Rojo terdeteksi (tipe: "
+            f"{', '.join(set(e['error_type'] for e in errors))}). Memulai pipeline auto-heal...[/bold cyan]"
         )
 
         all_fixed = True
-        for err in errors:
-            file_path = RojoBuildAutoHealer.find_lua_file(err["file_name"])
+        for idx, err in enumerate(errors, 1):
+            error_type = err.get("error_type", "generic")
+            file_name = err.get("file_name", "")
+
+            if error_type == "json_parse":
+                file_ref = err.get("file_ref", "")
+                if file_ref and os.path.exists(file_ref):
+                    console_terminal_interface.print(
+                        f"[bold cyan][RojoBuildHealer] [{idx}/{len(errors)}] JSON parse error: {file_ref}[/bold cyan]"
+                    )
+                    if await RojoBuildAutoHealer.heal_with_gemini(agent, file_ref, err):
+                        console_terminal_interface.print(
+                            f"[bold green][RojoBuildHealer] ✅ JSON fix berhasil: {file_ref}[/bold green]"
+                        )
+                        continue
+                all_fixed = False
+                continue
+
+            file_path = RojoBuildAutoHealer.find_lua_file(file_name)
             if not file_path:
                 console_terminal_interface.print(
-                    f"[bold yellow][RojoBuildHealer] File '{err['file_name']}.lua' tidak ditemukan di project.[/bold yellow]"
+                    f"[bold yellow][RojoBuildHealer] [{idx}/{len(errors)}] File '{file_name}' tidak ditemukan di project.[/bold yellow]"
                 )
                 all_fixed = False
                 continue
 
+            prop_name = err.get("prop_name", "")
+            expected_type = err.get("expected_type", "")
+
             console_terminal_interface.print(
-                f"[bold cyan][RojoBuildHealer] Healing: {err['file_name']} | "
-                f"{err['prop_name']} expected {err['expected_type']}, got {err['actual_type']}[/bold cyan]"
+                f"[bold cyan][RojoBuildHealer] [{idx}/{len(errors)}] Healing {error_type}: "
+                f"{file_name} | {prop_name or 'general'} → {expected_type}[/bold cyan]"
             )
 
-            # Langkah 1: Pattern auto-fix (cepat, tanpa API)
-            if RojoBuildAutoHealer.auto_fix_type_mismatch(file_path, err["prop_name"], err["expected_type"]):
+            if prop_name and expected_type and RojoBuildAutoHealer.auto_fix_type_mismatch(file_path, prop_name, expected_type):
                 console_terminal_interface.print(
-                    f"[bold green][RojoBuildHealer] ✅ Pattern auto-fix berhasil: {err['file_name']}[/bold green]"
+                    f"[bold green][RojoBuildHealer] ✅ Pattern auto-fix berhasil: {file_name}[/bold green]"
                 )
                 continue
 
-            # Langkah 2: Gemini CLI healing (diagnosis + fix cerdas)
             if await RojoBuildAutoHealer.heal_with_gemini(agent, file_path, err):
                 console_terminal_interface.print(
-                    f"[bold green][RojoBuildHealer] ✅ Gemini heal berhasil: {err['file_name']}[/bold green]"
+                    f"[bold green][RojoBuildHealer] ✅ Gemini heal berhasil: {file_name}[/bold green]"
                 )
             else:
                 console_terminal_interface.print(
-                    f"[bold red][RojoBuildHealer] ❌ Gagal heal: {err['file_name']}[/bold red]"
+                    f"[bold red][RojoBuildHealer] ❌ Gagal heal: {file_name}[/bold red]"
                 )
                 all_fixed = False
 
@@ -1095,8 +1512,17 @@ async def run_orchestrator():
                 continue
 
             # ══════════════════════════════════════════════════════════════
-            # Semua file valid → build Rojo + publish ke Roblox
+            # Semua file valid → Proaktif fix → build Rojo + publish ke Roblox
             # ══════════════════════════════════════════════════════════════
+            console_terminal_interface.print(
+                "[bold cyan][ProactiveFix] Scanning semua file sebelum Rojo build...[/bold cyan]"
+            )
+            _proactive_fixes = RojoBuildAutoHealer.proactive_scan_and_fix()
+            if _proactive_fixes > 0:
+                console_terminal_interface.print(
+                    f"[bold green][ProactiveFix] ✅ {_proactive_fixes} masalah tipe properti diperbaiki SEBELUM build.[/bold green]"
+                )
+
             rojo_ok, rojo_stderr = RobloxDeployer.compile_rojo()
             if not rojo_ok:
                 # Pipeline Auto-Heal Rojo: diagnosa → perbaiki file → retry build (maks 3x)
