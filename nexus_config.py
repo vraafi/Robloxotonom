@@ -91,7 +91,7 @@ class APIKeyRotator:
     _current_index = 0
     _pool_size = len(ACTIVE_AGENTS)
     _total_daily_requests = 0
-    _max_daily_requests = 11000
+    _max_daily_requests = float('inf')  # ∞ Tanpa batas harian — sistem berjalan selamanya
 
     @classmethod
     def get_current_key(cls) -> str:
@@ -113,8 +113,10 @@ class APIKeyRotator:
     def track_request(cls) -> bool:
         cls._total_daily_requests += 1
         if cls._total_daily_requests >= cls._max_daily_requests:
-            console_terminal_interface.print("[bold red]CIRCUIT BREAKER AKTIF: Limit harian tercapai.[/bold red]")
-            return False
+            # ∞ INFINITE MODE: Limit dinonaktifkan, sistem tidak pernah berhenti
+            # console_terminal_interface.print("[bold red]CIRCUIT BREAKER AKTIF: Limit harian tercapai.[/bold red]")
+            cls._total_daily_requests = 0  # Reset counter siklus baru, bukan berhenti
+            console_terminal_interface.print("[bold cyan]♾️ Counter harian direset (siklus baru). Sistem tetap berjalan.[/bold cyan]")
         return True
 
 ROBLOX_MCP_URL = os.getenv("ROBLOX_MCP_URL", "")
