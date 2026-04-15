@@ -43,23 +43,23 @@ class AbsoluteOmniValidator:
                 omni_errors.append(f"Contract Violation: Anda diwajibkan menggunakan '{req}' agar sesuai arsitektur.")
             
             if req == "Recipe":
-                if not re.search(r'Recipe\s*[=:]\s*\{\s*[\[\'"a-zA-Z_]', sanitized_code):
+                if not re.search(r'Recipe\s*(?::[^=\n]*)?=\s*\{\s*[\[\'"a-zA-Z_]', sanitized_code):
                     omni_errors.append("Crafting Logic Violation: Tabel 'Recipe' ditemukan, tetapi KOSONG atau formatnya salah. Hukum Crafting anti-P2W mewajibkan definisi bahan baku nyata. Format WAJIB salah satu dari ini: (1) local Recipe = {Iron=2, Wood=1} ATAU (2) local Recipe = {\"Iron\"=2} ATAU (3) local Recipe = {\"Kevlar Fiber\"=3, \"Iron Ingot\"=2}. DILARANG KERAS menulis Recipe = {} kosong!")
 
             if req == "ArmorTier":
-                if not re.search(r'ArmorTier\s*[=:]\s*[1-6]', sanitized_code):
+                if not re.search(r'ArmorTier\s*(?::\s*\w[\w\s]*)?=\s*[1-6]', sanitized_code):
                     omni_errors.append("Armor Physics Violation: 'ArmorTier' wajib didefinisikan dengan nilai angka 1 hingga 6 (Contoh: ArmorTier = 4).")
             
             if req == "MaterialType":
-                if not re.search(r'MaterialType\s*[=:]\s*[\'"][a-zA-Z]+[\'"]', sanitized_code):
+                if not re.search(r'MaterialType\s*(?::\s*\w[\w\s]*)?=\s*[\'"][a-zA-Z]', sanitized_code):
                     omni_errors.append("Armor Physics Violation: 'MaterialType' wajib didefinisikan sebagai string (Contoh: MaterialType = 'Ceramic' atau 'Steel').")
 
             if req == "ItemCategory":
-                if not re.search(r'ItemCategory\s*[=:]\s*[\'"](Weapon|Ammunition|Armor|Medical|Material|Valuable|Bait|Tool)[\'"]', sanitized_code, re.IGNORECASE):
+                if not re.search(r'ItemCategory\s*(?::\s*\w[\w\s]*)?=\s*[\'"](Weapon|Ammunition|Armor|Medical|Material|Valuable|Bait|Tool)[\'"]', sanitized_code, re.IGNORECASE):
                     omni_errors.append("Economy Taxonomy Violation: 'ItemCategory' wajib diisi SECARA SPESIFIK dengan salah satu kategori resmi ini: 'Weapon', 'Ammunition', 'Armor', 'Medical', 'Material', 'Valuable', 'Tool', atau 'Bait'. Dilarang mengarang nama kategori lain!")
 
             if req == "BasePrice":
-                if not re.search(r'BasePrice\s*[=:]\s*\d+', sanitized_code):
+                if not re.search(r'BasePrice\s*(?::\s*\w[\w\s]*)?=\s*\d+', sanitized_code):
                     omni_errors.append("Economy Violation: 'BasePrice' wajib didefinisikan sebagai angka integer variabel sungguhan (Contoh: local BasePrice = 1500). Dilarang keras memakai string atau komentar untuk harga!")
 
             if req == "CanCollide":
@@ -101,25 +101,25 @@ class AbsoluteOmniValidator:
                 omni_errors.append("Data Persistence Violation: Sistem inventaris permanen terdeteksi, tetapi Anda tidak menggunakan event `PlayerAdded` (untuk load) dan `PlayerRemoving` (untuk save). Ini akan menyebabkan barang pemain hilang mutlak saat mereka keluar dari game/disconnect! WAJIB pasang event tersebut untuk menyimpan data ke database.")
         
         if "Diet" in required_keywords:
-            if not re.search(r'Diet\s*[=:]\s*[\'"](Carnivore|Herbivore|Omnivore)[\'"]', sanitized_code, re.IGNORECASE):
+            if not re.search(r'Diet\s*(?::\s*\w[\w\s]*)?=\s*[\'"](Carnivore|Herbivore|Omnivore)[\'"]', sanitized_code, re.IGNORECASE):
                 omni_errors.append("Ecology Violation: Variabel 'Diet' wajib diisi dengan string 'Carnivore', 'Herbivore', atau 'Omnivore'.")
         if "SocialBehavior" in required_keywords:
-            if not re.search(r'SocialBehavior\s*[=:]\s*[\'"](Solitary|Pack|Herd)[\'"]', sanitized_code, re.IGNORECASE):
+            if not re.search(r'SocialBehavior\s*(?::\s*\w[\w\s]*)?=\s*[\'"](Solitary|Pack|Herd)[\'"]', sanitized_code, re.IGNORECASE):
                 omni_errors.append("Ecology Violation: Variabel 'SocialBehavior' wajib diisi dengan string 'Solitary', 'Pack', atau 'Herd'.")
         if "SpawnWeight" in required_keywords:
-            if not re.search(r'SpawnWeight\s*[=:]\s*\d+', sanitized_code):
+            if not re.search(r'SpawnWeight\s*(?::\s*\w[\w\s]*)?=\s*\d+', sanitized_code):
                 omni_errors.append("Ecology Violation: Variabel 'SpawnWeight' wajib didefinisikan sebagai angka.")
         if "Habitat" in required_keywords:
-            if not re.search(r'Habitat\s*[=:]\s*[\'"][a-zA-Z_]+[\'"]', sanitized_code, re.IGNORECASE):
+            if not re.search(r'Habitat\s*(?::\s*\w[\w\s]*)?=\s*[\'"][a-zA-Z_]', sanitized_code, re.IGNORECASE):
                 omni_errors.append("Ecology Violation: Variabel 'Habitat' wajib diisi dengan string nama bioma (contoh: 'Forest', 'Desert', 'Snow').")
         if "Stamina" in required_keywords:
-            if not re.search(r'Stamina\s*[=:]\s*\d+', sanitized_code):
+            if not re.search(r'Stamina\s*(?::\s*\w[\w\s]*)?=\s*\d+', sanitized_code):
                 omni_errors.append("Ecology Violation: Variabel 'Stamina' wajib didefinisikan sebagai angka.")
         if "PerceptionRadius" in required_keywords:
-            if not re.search(r'PerceptionRadius\s*[=:]\s*\d+', sanitized_code):
+            if not re.search(r'PerceptionRadius\s*(?::\s*\w[\w\s]*)?=\s*\d+', sanitized_code):
                 omni_errors.append("Ecology Violation: Variabel 'PerceptionRadius' wajib didefinisikan sebagai angka.")
         if "LocomotionType" in required_keywords:
-            if not re.search(r'LocomotionType\s*[=:]\s*[\'"](Terrestrial|Aerial|Aquatic)[\'"]', sanitized_code, re.IGNORECASE):
+            if not re.search(r'LocomotionType\s*(?::\s*\w[\w\s]*)?=\s*[\'"](Terrestrial|Aerial|Aquatic)[\'"]', sanitized_code, re.IGNORECASE):
                 omni_errors.append("Ecology Violation: Variabel 'LocomotionType' wajib diisi ('Terrestrial', 'Aerial', 'Aquatic').")
         if "DropTable" in required_keywords:
             has_drop_table = re.search(r'DropTable\s*[=:]\s*\{', sanitized_code)
