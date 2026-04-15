@@ -435,12 +435,212 @@ class RojoBuildAutoHealer:
             return 0
 
     @staticmethod
+    def fix_all_json_meta_files() -> int:
+        """
+        Scan dan perbaiki SEMUA file .meta.json dan .model.json di project Rojo.
+        Ini adalah sumber UTAMA error 'Property type mismatch' — Rojo membaca properti
+        dari file JSON ini, bukan dari kode Lua. Jika DisplayOrder di JSON berformat
+        {"Enum": X} atau {"Type": "Enum"} maka Rojo akan SELALU error meski Lua sudah diperbaiki.
+
+        Format JSON Rojo yang SALAH (penyebab error):
+          "DisplayOrder": {"Enum": 5}
+          "DisplayOrder": {"Type": "Enum", "Value": "ZIndexBehavior.Global"}
+
+        Format JSON Rojo yang BENAR:
+          "DisplayOrder": 5
+          "DisplayOrder": {"Int32": 5}
+          "DisplayOrder": {"Type": "Int32", "Value": 5}
+        """
+        INT32_PROPS = {
+            "DisplayOrder", "ZIndex", "LayoutOrder", "TextSize",
+            "MaxVisibleGraphemes", "BorderSizePixel",
+        }
+        FLOAT_PROPS = {
+            "BackgroundTransparency", "TextTransparency", "ImageTransparency",
+            "GroupTransparency", "ScrollBarThickness", "Transparency",
+            "Reflectance", "BackgroundTransparency",
+        }
+        BOOL_PROPS = {
+            "Visible", "Active", "ClipsDescendants", "Draggable",
+            "Selectable", "AutoLocalize", "ResetOnSpawn", "Enabled",
+            "Modal", "IgnoreGuiInset",
+        }
+
+        fix_count = 0
+
+        for root, dirs, files in os.walk(PROJECT_ROOT_DIRECTORY):
+            for fname in files:
+                if not (fname.endswith(".meta.json") or fname.endswith(".model.json") or
+                        (fname.endswith(".json") and fname != "default.project.json")):
+                    continue
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        raw = f.read()
+                    data = json.loads(raw)
+                except Exception:
+                    continue
+
+                changed = False
+
+                def fix_properties_dict(props: dict) -> bool:
+                    """Fix properti dalam dict — return True jika ada perubahan."""
+                    modified = False
+                    for prop_name in list(props.keys()):
+                        val = props[prop_name]
+
+                        if prop_name in INT32_PROPS:
+                            if isinstance(val, dict):
+                                if "Enum" in val or val.get("Type") in ("Enum", "enum"):
+                                    props[prop_name] = 0
+                                    modified = True
+                                elif "Int32" not in val and "Type" not in val:
+                                    props[prop_name] = 0
+                                    modified = True
+                            elif isinstance(val, str):
+                                props[prop_name] = 0
+                                modified = True
+
+                        elif prop_name in FLOAT_PROPS:
+                            if isinstance(val, dict):
+                                if "Enum" in val or val.get("Type") in ("Enum", "enum"):
+                                    props[prop_name] = 0.0
+                                    modified = True
+
+                        elif prop_name in BOOL_PROPS:
+                            if isinstance(val, dict):
+                                if "Enum" in val or val.get("Type") in ("Enum", "enum"):
+                                    props[prop_name] = True
+                                    modified = True
+
+                    return modified
+
+                def fix_node(node) -> bool:
+                    """Rekursif fix semua node JSON Rojo."""
+                    mod = False
+                    if not isinstance(node, dict):
+                        return mod
+                    for key in ["$properties", "Properties", "properties"]:
+                        if key in node and isinstance(node[key], dict):
+                            if fix_properties_dict(node[key]):
+                                mod = True
+                    for key in ["$children", "Children", "children"]:
+                        if key in node and isinstance(node[key], (list, dict)):
+                            children = node[key]
+                            if isinstance(children, list):
+                                for child in children:
+                                    if fix_node(child):
+                                        mod = True
+                            elif isinstance(children, dict):
+                                for child in children.values():
+                                    if fix_node(child):
+                                        mod = True
+                    for k, v in node.items():
+                        if isinstance(v, dict) and k not in ("$properties", "Properties", "properties"):
+                            if fix_node(v):
+                                mod = True
+                    return mod
+
+                if fix_node(data):
+                    changed = True
+
+                if changed:
+                    try:
+                        with open(fpath, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=2, ensure_ascii=False)
+                        fix_count += 1
+                        console_terminal_interface.print(
+                            f"[bold green][JsonFix] Tipe properti diperbaiki di: {fname}[/bold green]"
+                        )
+                    except Exception:
+                        pass
+
+        return fix_count
+
+    @staticmethod
+    def fix_json_for_instance(instance_name: str) -> int:
+        """
+        Cari dan perbaiki file JSON yang terkait dengan nama instance tertentu.
+        Dipanggil saat healer mendeteksi error spesifik pada instance tertentu.
+        """
+        fix_count = 0
+        search_terms = [instance_name, instance_name.lower(), instance_name.replace("_", "")]
+        for root, dirs, files in os.walk(PROJECT_ROOT_DIRECTORY):
+            for fname in files:
+                if not fname.endswith(".json"):
+                    continue
+                base = fname.replace(".meta.json", "").replace(".model.json", "").replace(".json", "")
+                if any(t.lower() in base.lower() or base.lower() in t.lower() for t in search_terms):
+                    fpath = os.path.join(root, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                    except Exception:
+                        continue
+
+                    INT32_PROPS = {
+                        "DisplayOrder", "ZIndex", "LayoutOrder", "TextSize",
+                        "MaxVisibleGraphemes", "BorderSizePixel",
+                    }
+
+                    def _fix(node):
+                        changed = False
+                        if isinstance(node, dict):
+                            for props_key in ["$properties", "Properties", "properties"]:
+                                props = node.get(props_key, {})
+                                if isinstance(props, dict):
+                                    for pname in list(props.keys()):
+                                        if pname in INT32_PROPS:
+                                            v = props[pname]
+                                            if isinstance(v, dict) and (
+                                                "Enum" in v or v.get("Type") in ("Enum", "enum")
+                                            ):
+                                                props[pname] = 0
+                                                changed = True
+                                            elif isinstance(v, str):
+                                                props[pname] = 0
+                                                changed = True
+                            for k, v in node.items():
+                                if isinstance(v, (dict, list)) and k not in ("$properties", "Properties", "properties"):
+                                    if isinstance(v, dict):
+                                        if _fix(v):
+                                            changed = True
+                                    elif isinstance(v, list):
+                                        for item in v:
+                                            if isinstance(item, dict) and _fix(item):
+                                                changed = True
+                        return changed
+
+                    if _fix(data):
+                        try:
+                            with open(fpath, "w", encoding="utf-8") as f:
+                                json.dump(data, f, indent=2, ensure_ascii=False)
+                            fix_count += 1
+                            console_terminal_interface.print(
+                                f"[bold green][JsonFix] Instance fix di: {fname}[/bold green]"
+                            )
+                        except Exception:
+                            pass
+        return fix_count
+
+    @staticmethod
     def proactive_scan_and_fix() -> int:
         """
-        Proaktif scan SEMUA file Lua di project dan perbaiki masalah tipe yang diketahui
+        Proaktif scan SEMUA file (Lua DAN JSON metadata Rojo) dan perbaiki masalah tipe properti
         SEBELUM Rojo build dijalankan.
+
+        PENTING: Rojo membaca properti instance dari file .meta.json / .model.json,
+        BUKAN dari kode Lua! Jadi kedua jenis file harus diperbaiki.
         """
         total_fixes = 0
+
+        json_fixes = RojoBuildAutoHealer.fix_all_json_meta_files()
+        if json_fixes > 0:
+            console_terminal_interface.print(
+                f"[bold green][ProactiveFix] {json_fixes} masalah diperbaiki di file JSON metadata Rojo[/bold green]"
+            )
+            total_fixes += json_fixes
+
         all_files = RojoBuildAutoHealer.find_all_lua_files()
         for fpath in all_files:
             fixes = RojoBuildAutoHealer.auto_fix_all_known_issues(fpath)
@@ -601,29 +801,6 @@ class RojoBuildAutoHealer:
         for idx, err in enumerate(errors, 1):
             error_type = err.get("error_type", "generic")
             file_name = err.get("file_name", "")
-
-            if error_type == "json_parse":
-                file_ref = err.get("file_ref", "")
-                if file_ref and os.path.exists(file_ref):
-                    console_terminal_interface.print(
-                        f"[bold cyan][RojoBuildHealer] [{idx}/{len(errors)}] JSON parse error: {file_ref}[/bold cyan]"
-                    )
-                    if await RojoBuildAutoHealer.heal_with_gemini(agent, file_ref, err):
-                        console_terminal_interface.print(
-                            f"[bold green][RojoBuildHealer] ✅ JSON fix berhasil: {file_ref}[/bold green]"
-                        )
-                        continue
-                all_fixed = False
-                continue
-
-            file_path = RojoBuildAutoHealer.find_lua_file(file_name)
-            if not file_path:
-                console_terminal_interface.print(
-                    f"[bold yellow][RojoBuildHealer] [{idx}/{len(errors)}] File '{file_name}' tidak ditemukan di project.[/bold yellow]"
-                )
-                all_fixed = False
-                continue
-
             prop_name = err.get("prop_name", "")
             expected_type = err.get("expected_type", "")
 
@@ -632,12 +809,52 @@ class RojoBuildAutoHealer:
                 f"{file_name} | {prop_name or 'general'} → {expected_type}[/bold cyan]"
             )
 
+            if error_type == "json_parse":
+                file_ref = err.get("file_ref", "")
+                if file_ref and os.path.exists(file_ref):
+                    if await RojoBuildAutoHealer.heal_with_gemini(agent, file_ref, err):
+                        console_terminal_interface.print(
+                            f"[bold green][RojoBuildHealer] ✅ JSON fix berhasil: {file_ref}[/bold green]"
+                        )
+                        continue
+                all_fixed = False
+                continue
+
+            # ── LANGKAH 0: Fix file JSON metadata Rojo terlebih dahulu ──────────
+            # Rojo membaca properti dari file .meta.json / .model.json, BUKAN dari kode Lua.
+            # Ini adalah penyebab loop yang terus berulang meski Lua sudah diperbaiki.
+            if error_type == "type_mismatch" and file_name:
+                json_fixes = RojoBuildAutoHealer.fix_json_for_instance(file_name)
+                if json_fixes > 0:
+                    console_terminal_interface.print(
+                        f"[bold green][RojoBuildHealer] ✅ JSON metadata fix berhasil ({json_fixes} file): {file_name}[/bold green]"
+                    )
+
+            # ── LANGKAH 1: Cari file Lua ─────────────────────────────────────────
+            file_path = RojoBuildAutoHealer.find_lua_file(file_name)
+            if not file_path:
+                # Tidak ada file Lua — tapi JSON mungkin sudah diperbaiki
+                if error_type == "type_mismatch" and file_name:
+                    json_fixes = RojoBuildAutoHealer.fix_json_for_instance(file_name)
+                    if json_fixes > 0:
+                        console_terminal_interface.print(
+                            f"[bold green][RojoBuildHealer] ✅ JSON-only fix: {file_name} (tidak ada file Lua)[/bold green]"
+                        )
+                        continue
+                console_terminal_interface.print(
+                    f"[bold yellow][RojoBuildHealer] File '{file_name}' tidak ditemukan.[/bold yellow]"
+                )
+                all_fixed = False
+                continue
+
+            # ── LANGKAH 2: Pattern auto-fix di Lua (cepat, tanpa API) ───────────
             if prop_name and expected_type and RojoBuildAutoHealer.auto_fix_type_mismatch(file_path, prop_name, expected_type):
                 console_terminal_interface.print(
-                    f"[bold green][RojoBuildHealer] ✅ Pattern auto-fix berhasil: {file_name}[/bold green]"
+                    f"[bold green][RojoBuildHealer] ✅ Pattern auto-fix (Lua) berhasil: {file_name}[/bold green]"
                 )
                 continue
 
+            # ── LANGKAH 3: Gemini CLI healing ────────────────────────────────────
             if await RojoBuildAutoHealer.heal_with_gemini(agent, file_path, err):
                 console_terminal_interface.print(
                     f"[bold green][RojoBuildHealer] ✅ Gemini heal berhasil: {file_name}[/bold green]"
