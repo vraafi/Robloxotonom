@@ -728,6 +728,68 @@ async def _get_file_lock(path: str) -> asyncio.Lock:
         return _FILE_LOCKS[path]
 
 
+_STUCK_LOOP_TEMPLATES: dict = {
+    "CORE_PERSISTENCE": (
+        '--!strict\n'
+        'local DataStoreService = game:GetService("DataStoreService")\n'
+        'local Players = game:GetService("Players")\n'
+        'local RunService = game:GetService("RunService")\n'
+        '\n'
+        'local PlayerDataStore = DataStoreService:GetDataStore("PlayerPersistence")\n'
+        '\n'
+        'local PlayerDataModule = {}\n'
+        'PlayerDataModule.__index = PlayerDataModule\n'
+        '\n'
+        'local activeSessionData: {[number]: {[string]: any}} = {}\n'
+        '\n'
+        'function PlayerDataModule.LoadPlayerData(player: Player): {[string]: any}\n'
+        '    local userId: number = player.UserId\n'
+        '    local success: boolean, result: any = pcall(function()\n'
+        '        return PlayerDataStore:GetAsync("Player_" .. tostring(userId))\n'
+        '    end)\n'
+        '    local data: {[string]: any} = if success and typeof(result) == "table" then result else {Coins = 0, Level = 1, Inventory = {}}\n'
+        '    activeSessionData[userId] = data\n'
+        '    return data\n'
+        'end\n'
+        '\n'
+        'function PlayerDataModule.SavePlayerData(player: Player): boolean\n'
+        '    local userId: number = player.UserId\n'
+        '    local data: {[string]: any}? = activeSessionData[userId]\n'
+        '    if not data then return false end\n'
+        '    local success: boolean, err: any = pcall(function()\n'
+        '        PlayerDataStore:SetAsync("Player_" .. tostring(userId), data)\n'
+        '    end)\n'
+        '    if not success then warn("[Persistence] Save gagal: " .. tostring(err)) end\n'
+        '    return success\n'
+        'end\n'
+        '\n'
+        'local playerAddedConnection: RBXScriptConnection = Players.PlayerAdded:Connect(function(player: Player)\n'
+        '    PlayerDataModule.LoadPlayerData(player)\n'
+        'end)\n'
+        '\n'
+        'local playerRemovingConnection: RBXScriptConnection = Players.PlayerRemoving:Connect(function(player: Player)\n'
+        '    PlayerDataModule.SavePlayerData(player)\n'
+        '    activeSessionData[player.UserId] = nil\n'
+        'end)\n'
+        '\n'
+        'local heartbeatConnection: RBXScriptConnection = RunService.Heartbeat:Connect(function()\n'
+        'end)\n'
+        '\n'
+        'return PlayerDataModule\n'
+    ),
+}
+
+
+def _get_stuck_loop_template_override(task_name: str, forb_keys: list) -> str:
+    _task_category = "_".join(task_name.split("_")[:-1]) if "_" in task_name else task_name
+    template = _STUCK_LOOP_TEMPLATES.get(_task_category, "")
+    if template:
+        for fk in forb_keys:
+            if fk in template:
+                return ""
+    return template
+
+
 async def _run_task_parallel(
     task_num: int,
     total_tasks: int,
@@ -781,13 +843,30 @@ async def _run_task_parallel(
     prev_code = ""
     real_attempt_count = 0
 
+    import hashlib as _hashlib_loop
+    _error_repeat_tracker: dict = {}
+    _MAX_SAME_ERROR_RETRIES = 5
+    _MAX_TOTAL_RETRIES = 20
+
     file_lock = await _get_file_lock(task_path)
 
     while not completed:
+        if real_attempt_count >= _MAX_TOTAL_RETRIES:
+            console_terminal_interface.print(
+                f"[bold red]  [{dedicated_agent['name']}] BATAS TOTAL RETRY ({_MAX_TOTAL_RETRIES}) TERCAPAI untuk {task_name}. Task DISKIP.[/bold red]"
+            )
+            await send_telegram_notification(
+                f"⚠️ [{dedicated_agent['name']}] TASK DISKIP (max retry)\n"
+                f"📄 {task_name}\n"
+                f"❌ Error terakhir: {prev_err[:200]}",
+                important=True,
+            )
+            return (False, task_name, f"MAX_RETRY_EXCEEDED: {prev_err[:100]}")
+
         console_terminal_interface.print(
             f"[bold cyan]  [{dedicated_agent['name']}] "
             f"Task {task_num}/{total_tasks}: {task_name} — "
-            f"Percobaan {real_attempt_count + 1}/∞[/bold cyan]"
+            f"Percobaan {real_attempt_count + 1}/{_MAX_TOTAL_RETRIES}[/bold cyan]"
         )
         try:
             async with file_lock:
@@ -806,7 +885,6 @@ async def _run_task_parallel(
             completed = False
 
         if completed:
-            # Notifikasi Telegram per task selesai
             await send_telegram_notification(
                 f"✅ [{dedicated_agent['name']}] TASK SELESAI\n"
                 f"📄 {task_name}\n"
@@ -816,16 +894,42 @@ async def _run_task_parallel(
             return (True, task_name, "done")
 
         if "RATE_LIMIT" in prev_err:
-            # ⚡ Dedicated agent kena rate limit → retry cepat tanpa nunggu 60s
             console_terminal_interface.print(
                 f"[bold yellow]  [{dedicated_agent['name']}] Rate limit → retry 5s...[/bold yellow]"
             )
             await asyncio.sleep(5)
-        else:
-            real_attempt_count += 1
-            backoff_delay = min(real_attempt_count * 2, 10)
-            if real_attempt_count > 0:
-                await asyncio.sleep(backoff_delay)
+            continue
+
+        _err_hash = _hashlib_loop.md5(prev_err.strip().encode()).hexdigest()[:12]
+        _error_repeat_tracker[_err_hash] = _error_repeat_tracker.get(_err_hash, 0) + 1
+
+        if _error_repeat_tracker[_err_hash] >= _MAX_SAME_ERROR_RETRIES:
+            console_terminal_interface.print(
+                f"[bold red]  [STUCK LOOP] Error identik terdeteksi {_MAX_SAME_ERROR_RETRIES}x untuk {task_name}. "
+                f"Mengaktifkan TEMPLATE OVERRIDE...[/bold red]"
+            )
+            _override = _get_stuck_loop_template_override(task_name, task["forb"])
+            if _override:
+                prev_err = (
+                    f"[STUCK LOOP OVERRIDE — ITERASI KE-{_error_repeat_tracker[_err_hash]}]\n"
+                    f"Error sebelumnya SAMA PERSIS sudah {_MAX_SAME_ERROR_RETRIES}x. AI WAJIB menggunakan template kode berikut TANPA MODIFIKASI:\n"
+                    f"{_override}\n"
+                    f"DILARANG mengubah template di atas. Salin PERSIS ke output.\n"
+                    f"Error asli: {prev_err[:300]}"
+                )
+                console_terminal_interface.print(
+                    f"[bold magenta]  [TEMPLATE OVERRIDE] Template darurat disuntikkan untuk {task_name}[/bold magenta]"
+                )
+            else:
+                console_terminal_interface.print(
+                    f"[bold red]  [SKIP] Tidak ada template override untuk {task_name}. Task DISKIP.[/bold red]"
+                )
+                return (False, task_name, f"STUCK_LOOP_NO_TEMPLATE: {prev_err[:100]}")
+
+        real_attempt_count += 1
+        backoff_delay = min(real_attempt_count * 2, 10)
+        if real_attempt_count > 0:
+            await asyncio.sleep(backoff_delay)
 
     return (False, task_name, prev_err[:120])
 

@@ -1289,7 +1289,19 @@ class OmniSynthesizerAgent:
             )
 
         if not augment_parts:
-            return ""
+            augment_parts.append(
+                f"\n[AUTONOMOUS SELF-DIAGNOSIS — ERROR TIDAK DIKENALI PATTERN MATCHER]:\n"
+                f"Error dari percobaan sebelumnya:\n{previous_error[:500]}\n\n"
+                f"INSTRUKSI UNTUK AI HEALER (SELF-DIAGNOSE):\n"
+                f"1. Baca error message di atas secara LITERAL kata per kata.\n"
+                f"2. Identifikasi: apakah ini syntax error, runtime error, type mismatch, atau contract violation?\n"
+                f"3. Cari BARIS KODE SPESIFIK yang menyebabkan error tersebut.\n"
+                f"4. Tulis ulang SELURUH kode dengan perbaikan pada baris yang bermasalah.\n"
+                f"5. Pastikan kode baru TIDAK mengandung pola yang sama yang menyebabkan error.\n"
+                f"6. VERIFIKASI MENTAL: jalankan kode secara mental baris per baris sebelum output.\n"
+                f"JANGAN mengulangi kode yang sama. Jika error SAMA dengan sebelumnya,\n"
+                f"ambil pendekatan BERBEDA TOTAL untuk menyelesaikan tugas ini.\n"
+            )
 
         return (
             "\n[ANALISIS MENDALAM ERROR PERCOBAAN SEBELUMNYA — BACA DAN PERBAIKI SEBELUM MENULIS KODE]:\n"

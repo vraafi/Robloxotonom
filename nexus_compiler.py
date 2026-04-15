@@ -42,10 +42,9 @@ class AbsoluteOmniValidator:
                 omni_errors.append("Performance Violation: Loop terdeteksi tanpa RunService atau task.wait().")
 
 
-        # Rojo Property Type Mismatch Prevention (cegah sebelum sampai ke build Rojo)
         _rojo_int_props = ["DisplayOrder", "ZIndex", "LayoutOrder", "TextSize"]
         for _rp in _rojo_int_props:
-            if re.search(r"\\." + re.escape(_rp) + r"\\s*=\\s*Enum\\.", raw_luau_code):
+            if re.search(r"\." + re.escape(_rp) + r"\s*=\s*Enum\.", sanitized_code):
                 omni_errors.append(
                     "Rojo Type Violation: `" + _rp + "` wajib berupa integer (Int32), BUKAN Enum. "
                     "SALAH: ." + _rp + " = Enum.Something | BENAR: ." + _rp + " = 5"
