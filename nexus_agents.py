@@ -1230,6 +1230,73 @@ class OmniSynthesizerAgent:
             "Tugas kamu: tulis HANYA logika Luau murni yang sesuai tipe task tersebut."
         )
 
+    @staticmethod
+    def _build_error_augmentation(previous_error: str, forb_keys: list) -> str:
+        """
+        Bangun augmentasi prompt berdasarkan analisis mendalam error sebelumnya.
+        TIDAK mengurangi prompt yang sudah ada — hanya MENAMBAHKAN konteks error-spesifik.
+        AI healer bisa self-diagnose dan generate instruksi perbaikan yang akurat.
+        """
+        augment_parts = []
+
+        # --- Deteksi: Forbidden keyword (_G, shared, dll) ---
+        for fk in forb_keys:
+            if fk in previous_error and ("Dilarang keras" in previous_error or "Contract Violation" in previous_error):
+                part = (
+                    f"\n[PERINGATAN KRITIS - PERCOBAAN SEBELUMNYA DITOLAK KARENA KEYWORD TERLARANG: '{fk}']\n"
+                    f"Kode kamu DITOLAK karena mengandung '{fk}'. Ini TIDAK BOLEH TERJADI.\n"
+                )
+                if fk == "_G":
+                    part += (
+                        "SOLUSI WAJIB — Ganti _G dengan pola ModuleScript + require():\n"
+                        "  SALAH  : _G.PlayerData = {}\n"
+                        "  BENAR  : Buat ModuleScript di ReplicatedStorage, lalu:\n"
+                        "           local M = require(game.ReplicatedStorage.GameData)\n"
+                        "           M.PlayerData = {}\n"
+                        "Pastikan string \"_G\" tidak muncul sama sekali dalam kode output.\n"
+                    )
+                elif fk == "shared":
+                    part += "SOLUSI: Ganti \"shared\" dengan ModuleScript di ReplicatedStorage.\n"
+                augment_parts.append(part)
+
+        # --- Deteksi: Rojo Property Type Mismatch ---
+        if "Rojo Type Violation" in previous_error or "Property type mismatch" in previous_error or "DisplayOrder" in previous_error:
+            augment_parts.append(
+                "\n[ROJO TYPE MISMATCH TERDETEKSI — ATURAN WAJIB PROPERTI ROBLOX]:\n"
+                "DisplayOrder, ZIndex, LayoutOrder, TextSize = angka integer (Int32), BUKAN Enum.\n"
+                "SALAH: gui.DisplayOrder = Enum.ZIndexBehavior.Global\n"
+                "BENAR: gui.DisplayOrder = 5\n"
+                "ZIndexBehavior adalah properti BERBEDA: gui.ZIndexBehavior = Enum.ZIndexBehavior.Global\n"
+            )
+
+        # --- Deteksi: Contract Violation — keyword wajib tidak digunakan ---
+        if "Anda diwajibkan menggunakan" in previous_error:
+            augment_parts.append(
+                "\n[KEYWORD WAJIB BELUM DITEMUKAN]:\n"
+                f"Error sebelumnya: {previous_error[:300]}\n"
+                "Pastikan semua keyword dari daftar [KEYWORD WAJIB] benar-benar hadir dalam kode.\n"
+            )
+
+        # --- Deteksi: Syntax error Lune runtime ---
+        if "syntax error" in previous_error.lower() or "RUNTIME EXECUTION FAILED" in previous_error:
+            import re as _re2
+            _lm = _re2.search(r':(\d+):', previous_error)
+            _line_hint = f" di baris {_lm.group(1)}" if _lm else ""
+            augment_parts.append(
+                f"\n[SYNTAX ERROR{_line_hint} — PERCOBAAN SEBELUMNYA GAGAL RUNTIME]:\n"
+                f"Error: {previous_error[:250]}\n"
+                "Periksa semua statement: tidak boleh terpotong, tidak ada expression tanpa assignment.\n"
+            )
+
+        if not augment_parts:
+            return ""
+
+        return (
+            "\n[ANALISIS MENDALAM ERROR PERCOBAAN SEBELUMNYA — BACA DAN PERBAIKI SEBELUM MENULIS KODE]:\n"
+            + "".join(augment_parts)
+            + "\n"
+        )
+
     async def synthesize_handoff(
         self,
         agent: dict,
@@ -1394,6 +1461,13 @@ class OmniSynthesizerAgent:
             live_rag_data += "GUNAKAN TEKS KODE DAN DISKUSI DI ATAS SEBAGAI INSPIRASI/CONTEKAN CARA MENYELESAIKAN TUGAS INI.\n"
             comprehensive_prompt += live_rag_data
             console_terminal_interface.print(f"[dim green]  ✅ DevForum dan Raw GitHub disuntikkan ke prompt.[/dim green]")
+
+
+        # === AUGMENTASI PROMPT DINAMIS BERDASARKAN ANALISIS ERROR SEBELUMNYA ===
+        if previous_error:
+            _aug = OmniSynthesizerAgent._build_error_augmentation(previous_error, forb_keys)
+            if _aug:
+                comprehensive_prompt += _aug
 
         success, result_data = await execute_gemini_cli_pure(agent, self.sys_inst, comprehensive_prompt)
 
