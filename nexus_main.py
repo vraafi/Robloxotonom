@@ -521,6 +521,125 @@ def _build_task_queue():
     return task_queue
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚡ ANTIGRAVITY-STYLE PARALLEL EXECUTION SYSTEM
+# Setiap task mendapat agent sendiri, berjalan bersamaan, tidak saling tunggu.
+# File-lock mencegah dua agent menulis file yang sama secara bersamaan.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_FILE_LOCKS: dict = {}
+_FILE_LOCKS_MUTEX = asyncio.Lock()
+
+async def _get_file_lock(path: str) -> asyncio.Lock:
+    """Satu Lock per path file — mencegah tabrakan tulis antar agent."""
+    async with _FILE_LOCKS_MUTEX:
+        if path not in _FILE_LOCKS:
+            _FILE_LOCKS[path] = asyncio.Lock()
+        return _FILE_LOCKS[path]
+
+
+async def _run_task_parallel(
+    task_num: int,
+    total_tasks: int,
+    task: dict,
+    dedicated_agent: dict,
+    synthesizer,
+    generation_counter: int,
+    evolution_level: int,
+) -> tuple:
+    """
+    ⚡ PARALLEL WORKER — Satu task, satu agent dedicated, berjalan bebas.
+    Tidak berbagi agent dengan task lain = tidak ada antrian.
+    File-lock mencegah tabrakan jika dua task menulis path yang sama.
+    Healer berjalan per-task secara independen.
+    """
+    task_name = task["name"]
+    task_path = task["path"]
+
+    # ── Resume check ──────────────────────────────────────────────────────
+    if os.path.exists(task_path) and os.path.getsize(task_path) > 50:
+        _db_resume = establish_database_connection()
+        _cur_resume = _db_resume.cursor()
+        _cur_resume.execute(
+            "SELECT module_name FROM verified_modules WHERE module_name = ?",
+            (task_name,)
+        )
+        _row_resume = _cur_resume.fetchone()
+        _db_resume.close()
+
+        if _row_resume:
+            console_terminal_interface.print(
+                f"[dim green]⏭️  [RESUME] '{task_name}' sudah selesai. Dilewati.[/dim green]"
+            )
+            return (True, task_name, "resumed")
+        else:
+            try:
+                with open(task_path, "r", encoding="utf-8") as _f_r:
+                    _existing_code = _f_r.read()
+                if len(_existing_code.strip()) > 50:
+                    await save_verified_module(task_name, task_path, _existing_code)
+                    console_terminal_interface.print(
+                        f"[dim cyan]🔄 [RESUME-SYNC] '{task_name}' disinkronkan ke DB.[/dim cyan]"
+                    )
+                    return (True, task_name, "synced")
+            except Exception:
+                pass
+
+    # ── Eksekusi dengan dedicated agent + file-lock ───────────────────────
+    completed = False
+    prev_err = ""
+    prev_code = ""
+    real_attempt_count = 0
+
+    file_lock = await _get_file_lock(task_path)
+
+    while not completed:
+        console_terminal_interface.print(
+            f"[bold cyan]  [{dedicated_agent['name']}] "
+            f"Task {task_num}/{total_tasks}: {task_name} — "
+            f"Percobaan {real_attempt_count + 1}/∞[/bold cyan]"
+        )
+        try:
+            async with file_lock:
+                completed, prev_err, prev_code = await synthesizer.synthesize_handoff(
+                    dedicated_agent,
+                    task_path,
+                    task_name,
+                    task["desc"],
+                    task["req"],
+                    task["forb"],
+                    prev_err,
+                    prev_code,
+                )
+        except Exception as exc:
+            prev_err = f"EXCEPTION: {str(exc)}"
+            completed = False
+
+        if completed:
+            # Notifikasi Telegram per task selesai
+            await send_telegram_notification(
+                f"✅ [{dedicated_agent['name']}] TASK SELESAI\n"
+                f"📄 {task_name}\n"
+                f"🔁 Evolusi {evolution_level} | Siklus {generation_counter}",
+                important=False,
+            )
+            return (True, task_name, "done")
+
+        if "RATE_LIMIT" in prev_err:
+            # ⚡ Dedicated agent kena rate limit → retry cepat tanpa nunggu 60s
+            console_terminal_interface.print(
+                f"[bold yellow]  [{dedicated_agent['name']}] Rate limit → retry 5s...[/bold yellow]"
+            )
+            await asyncio.sleep(5)
+        else:
+            real_attempt_count += 1
+            backoff_delay = min(real_attempt_count * 2, 10)
+            if real_attempt_count > 0:
+                await asyncio.sleep(backoff_delay)
+
+    return (False, task_name, prev_err[:120])
+
 async def run_orchestrator():
     try:
         await initialize_system_ledger()
@@ -573,114 +692,59 @@ async def run_orchestrator():
             total_tasks = len(task_queue)
 
             console_terminal_interface.print(
+            console_terminal_interface.print(
                 Panel(
-                    f"[bold magenta]=== TAHAP 1: SEQUENTIAL QUEUE HANDOFF "
-                    f"({total_tasks} tasks, {len(ACTIVE_AGENTS)} agents aktif) ===[/bold magenta]"
+                    f"[bold cyan]⚡ PARALLEL EXECUTION AKTIF\n"
+                    f"({total_tasks} tasks × {len(ACTIVE_AGENTS)} agents dedicated — tidak antri)\n"
+                    f"Evolusi {evolution_level} | Siklus {generation_counter}[/bold cyan]"
                 )
             )
 
-            tasks_done = 0
-            tasks_failed = 0
-            failed_tasks = []
+            # Notifikasi Telegram: evolusi dimulai
+            await send_telegram_notification(
+                f"🚀 EVOLUSI {evolution_level} DIMULAI\n"
+                f"⚡ {total_tasks} task berjalan PARALEL\n"
+                f"👥 {len(ACTIVE_AGENTS)} agent dedicated (tidak ada antrian)\n"
+                f"🔁 Siklus ke-{generation_counter}",
+                important=True,
+            )
 
-            for task_num, task in enumerate(task_queue, start=1):
-                console_terminal_interface.print(
-                    f"\n[bold blue]--- Task {task_num}/{total_tasks}: {task['name']} ---[/bold blue]"
+            # Buat worker per task — masing-masing dapat agent sendiri (index-locked)
+            _parallel_workers = [
+                _run_task_parallel(
+                    task_num=i + 1,
+                    total_tasks=total_tasks,
+                    task=task,
+                    dedicated_agent=ACTIVE_AGENTS[i % len(ACTIVE_AGENTS)],
+                    synthesizer=synthesizer,
+                    generation_counter=generation_counter,
+                    evolution_level=evolution_level,
                 )
+                for i, task in enumerate(task_queue)
+            ]
 
-                # ============================================================
-                # RESUME CHECK: Lewati task yang sudah selesai
-                # Saat sistem di-restart, periksa file di disk + database.
-                # Jika keduanya ada dan valid, langsung lanjut ke task berikutnya.
-                # ============================================================
-                if os.path.exists(task["path"]) and os.path.getsize(task["path"]) > 50:
-                    _db_resume = establish_database_connection()
-                    _cur_resume = _db_resume.cursor()
-                    _cur_resume.execute(
-                        "SELECT module_name FROM verified_modules WHERE module_name = ?",
-                        (task["name"],)
-                    )
-                    _row_resume = _cur_resume.fetchone()
-                    _db_resume.close()
+            # ⚡ Semua task berjalan bersamaan — tidak saling tunggu
+            _parallel_results = await asyncio.gather(*_parallel_workers, return_exceptions=True)
 
-                    if _row_resume:
-                        console_terminal_interface.print(
-                            f"[dim green]⏭️  [RESUME] '{task['name']}' sudah selesai sebelumnya. Dilewati otomatis.[/dim green]"
-                        )
-                        tasks_done += 1
-                        continue
-                    else:
-                        # File ada di disk tapi belum di database (mungkin crash sebelum save DB)
-                        # Sync dulu ke database, lalu skip
-                        try:
-                            with open(task["path"], "r", encoding="utf-8") as _f_resume:
-                                _existing_code = _f_resume.read()
-                            if len(_existing_code.strip()) > 50:
-                                await save_verified_module(task["name"], task["path"], _existing_code)
-                                console_terminal_interface.print(
-                                    f"[dim cyan]🔄 [RESUME-SYNC] '{task['name']}' file ada di disk, disinkronkan ke DB. Dilewati.[/dim cyan]"
-                                )
-                                tasks_done += 1
-                                continue
-                        except Exception:
-                            pass  # File rusak atau tidak bisa dibaca, proses ulang dari awal
+            # Hitung hasil
+            tasks_done = sum(1 for r in _parallel_results if isinstance(r, tuple) and r[0])
+            tasks_failed = total_tasks - tasks_done
+            failed_tasks = [
+                f"• {r[1]}: {r[2]}"
+                for r in _parallel_results
+                if isinstance(r, tuple) and not r[0]
+            ]
 
-                task_start_time = time.time()
-                completed = False
-                prev_err = ""
-                prev_code = ""
-                real_attempt_count = 0
-                error_history = []
-
-                while not completed:
-                    current_agent = ACTIVE_AGENTS[agent_idx % len(ACTIVE_AGENTS)]
-                    agent_idx += 1
-
-                    console_terminal_interface.print(
-                        f"[bold cyan]  Percobaan {real_attempt_count + 1}/∞ → [{current_agent['name']}] (Estafet 24/7 Tanpa Batas)[/bold cyan]"
-                    )
-
-                    try:
-                        completed, prev_err, prev_code = await synthesizer.synthesize_handoff(
-                            current_agent,
-                            task["path"],
-                            task["name"],
-                            task["desc"],
-                            task["req"],
-                            task["forb"],
-                            prev_err,
-                            prev_code,
-                        )
-                    except Exception as e:
-                        prev_err = f"EXCEPTION: {str(e)}"
-                        completed = False
-
-                    if completed:
-                        tasks_done += 1
-                        break
-
-                    if "RATE_LIMIT" in prev_err:
-                        console_terminal_interface.print(
-                            "[bold yellow]  Rate limit terdeteksi, menunggu 60 detik...[/bold yellow]"
-                        )
-                        await asyncio.sleep(60)
-                    else:
-                        real_attempt_count += 1
-
-                        error_key = prev_err.split(":")[0][:50]
-                        error_history.append(error_key)
-
-                        backoff_delay = min(2 ** real_attempt_count, 30)
-                        if real_attempt_count > 0:
-                            await asyncio.sleep(backoff_delay)
-
-                if not completed:
-                    tasks_failed += 1
-                    error_summary = f"• {task['name']}: {prev_err[:100]}"
-                    failed_tasks.append(error_summary)
-                    continue
-
-            console_terminal_interface.print(
+            # Ringkasan evolusi ke Telegram
+            _evo_summary = (
+                f"📊 EVOLUSI {evolution_level} SELESAI\n"
+                f"✅ Berhasil: {tasks_done}/{total_tasks}\n"
+                f"❌ Gagal: {tasks_failed}/{total_tasks}\n"
+                f"🔁 Siklus ke-{generation_counter}"
+            )
+            if failed_tasks:
+                _evo_summary += "\n\n📋 Task gagal:\n" + "\n".join(failed_tasks[:5])
+            await send_telegram_notification(_evo_summary, important=True)
                 f"\n[bold magenta]Siklus {generation_counter} Selesai. "
                 f"Berhasil: {tasks_done}/{total_tasks}, Gagal: {tasks_failed}/{total_tasks}. "
                 f"Sinkronisasi File...[/bold magenta]"
