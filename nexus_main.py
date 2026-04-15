@@ -46,6 +46,193 @@ _last_telegram_send = 0.0
 _min_interval_between_messages = 2.0
 
 
+
+class RojoBuildAutoHealer:
+    """
+    Auto-healer otonom untuk error Rojo build.
+    Pipeline: Parse error → Cari file → Auto-fix (pattern) → Gemini heal → Retry build.
+    Healer membangun prompt sendiri berdasarkan analisis error, tanpa mengurangi konteks yang ada.
+    """
+
+    @staticmethod
+    def parse_rojo_errors(stderr: str) -> list:
+        """Extract semua error Rojo dari stderr, dengan info properti dan lokasi."""
+        errors = []
+        pattern = re.compile(
+            r"Property type mismatch: Expected\s+(\S+)\s+to be of type\s+(\w+),\s+but it was of type\s+(\w+)\s+on instance\s+(\S+)",
+            re.IGNORECASE
+        )
+        for m in pattern.finditer(stderr):
+            full_prop = m.group(1)        # e.g. ScreenGui.DisplayOrder
+            expected_type = m.group(2)    # e.g. Int32
+            actual_type = m.group(3)      # e.g. Enum
+            instance_path = m.group(4)    # e.g. ApexAbsolut.StarterGui.CORE_INBOX_UI_1
+            prop_name = full_prop.split(".")[-1]
+            file_name = instance_path.split(".")[-1]
+            errors.append({
+                "full_prop": full_prop,
+                "prop_name": prop_name,
+                "expected_type": expected_type,
+                "actual_type": actual_type,
+                "instance_path": instance_path,
+                "file_name": file_name,
+            })
+        return errors
+
+    @staticmethod
+    def find_lua_file(file_name: str) -> str:
+        """Cari file .lua/.luau di seluruh project berdasarkan nama (tanpa ekstensi)."""
+        if not file_name:
+            return None
+        for root, dirs, files in os.walk(PROJECT_ROOT_DIRECTORY):
+            for fname in files:
+                if fname.startswith(file_name) and fname.endswith((".lua", ".luau")):
+                    return os.path.join(root, fname)
+        return None
+
+    @staticmethod
+    def auto_fix_type_mismatch(file_path: str, prop_name: str, expected_type: str) -> bool:
+        """
+        Perbaiki otomatis type mismatch yang sudah diketahui (tanpa Gemini).
+        Contoh: DisplayOrder = Enum.X → DisplayOrder = 0
+        """
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                code = f.read()
+            original = code
+            if expected_type == "Int32":
+                # Ganti assignment Enum ke angka 0 untuk semua properti Int32
+                code = re.sub(
+                    r"(\.\s*" + re.escape(prop_name) + r"\s*=\s*)Enum\.[A-Za-z0-9_.]+",
+                    r"\g<1>0",
+                    code
+                )
+                # Juga tangkap format: propName = Enum.X (tanpa titik)
+                code = re.sub(
+                    r"(?<![\w.])(" + re.escape(prop_name) + r"\s*=\s*)Enum\.[A-Za-z0-9_.]+",
+                    r"\g<1>0",
+                    code
+                )
+            if code != original:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                return True
+            return False
+        except Exception:
+            return False
+
+    @staticmethod
+    async def heal_with_gemini(agent: dict, file_path: str, error_info: dict) -> bool:
+        """
+        Healer membangun prompt sendiri berdasarkan error Rojo dan memperbaiki file via Gemini CLI.
+        Prompt dibangun secara dinamis — akurat dan spesifik untuk error yang terjadi.
+        """
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                original_code = f.read()
+        except Exception:
+            return False
+
+        sys_inst = (
+            "Kamu adalah spesialis debug Roblox Luau dan Rojo project structure level senior.\n"
+            "TUGAS: Perbaiki kode Luau yang menyebabkan Rojo build gagal.\n"
+            "OUTPUT: HANYA kode Luau murni yang sudah diperbaiki. TIDAK ADA teks lain.\n"
+            "Baris pertama WAJIB --!strict."
+        )
+
+        # Healer membangun prompt sendiri secara dinamis berdasarkan error yang terjadi
+        heal_prompt = (
+            f"[ROJO BUILD ERROR YANG TERJADI]:\n"
+            f"Property type mismatch: Expected {error_info['full_prop']} to be of type "
+            f"{error_info['expected_type']}, but it was of type {error_info['actual_type']} "
+            f"on instance {error_info['instance_path']}\n\n"
+            f"[DIAGNOSA ROOT CAUSE]:\n"
+            f"Properti '{error_info['prop_name']}' diisi dengan tipe {error_info['actual_type']} "
+            f"(Enum.Something), padahal Roblox/Rojo mengharuskan tipe {error_info['expected_type']} (integer).\n\n"
+            f"[ATURAN TIPE PROPERTI ROBLOX YANG WAJIB DIPATUHI]:\n"
+            f"  DisplayOrder  = 5             (Int32 — angka integer, BUKAN Enum)\n"
+            f"  ZIndex        = 1             (Int32 — angka integer, BUKAN Enum)\n"
+            f"  LayoutOrder   = 0             (Int32 — angka integer, BUKAN Enum)\n"
+            f"  TextSize      = 14            (Int32 — angka integer, BUKAN Enum)\n"
+            f"  ZIndexBehavior = Enum.ZIndexBehavior.Global  (BERBEDA dari DisplayOrder!)\n\n"
+            f"[INSTRUKSI FIX SPESIFIK]:\n"
+            f"  Cari semua assignment '{error_info['prop_name']}' dalam kode.\n"
+            f"  Ganti semua yang berupa Enum.* dengan angka integer yang tepat.\n"
+            f"  Contoh: .{error_info['prop_name']} = Enum.ZIndexBehavior.Global  →  .{error_info['prop_name']} = 5\n\n"
+            f"[KODE YANG PERLU DIPERBAIKI ({error_info['file_name']}.lua)]:\n"
+            f"```lua\n{original_code}\n```\n\n"
+            f"Kembalikan kode Luau LENGKAP yang sudah diperbaiki."
+        )
+
+        success, result_data = await execute_gemini_cli_pure(agent, sys_inst, heal_prompt)
+        if not success or not result_data:
+            return False
+
+        fixed_code = extract_pure_luau_code(result_data)
+        if not fixed_code or len(fixed_code.strip()) < 20:
+            return False
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(fixed_code)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    async def heal_loop(rojo_stderr: str, agent: dict) -> bool:
+        """
+        Orchestrate full auto-heal pipeline:
+        1. Parse semua Rojo error dari stderr
+        2. Untuk tiap error: cari file → auto-fix pattern → Gemini heal
+        3. Kembalikan True jika semua berhasil diperbaiki
+        """
+        errors = RojoBuildAutoHealer.parse_rojo_errors(rojo_stderr)
+        if not errors:
+            console_terminal_interface.print(
+                "[bold yellow][RojoBuildHealer] Tidak bisa parse error Rojo. Melewati auto-heal.[/bold yellow]"
+            )
+            return False
+
+        console_terminal_interface.print(
+            f"[bold cyan][RojoBuildHealer] {len(errors)} error Rojo terdeteksi. Memulai pipeline auto-heal...[/bold cyan]"
+        )
+
+        all_fixed = True
+        for err in errors:
+            file_path = RojoBuildAutoHealer.find_lua_file(err["file_name"])
+            if not file_path:
+                console_terminal_interface.print(
+                    f"[bold yellow][RojoBuildHealer] File '{err['file_name']}.lua' tidak ditemukan di project.[/bold yellow]"
+                )
+                all_fixed = False
+                continue
+
+            console_terminal_interface.print(
+                f"[bold cyan][RojoBuildHealer] Healing: {err['file_name']} | "
+                f"{err['prop_name']} expected {err['expected_type']}, got {err['actual_type']}[/bold cyan]"
+            )
+
+            # Langkah 1: Pattern auto-fix (cepat, tanpa API)
+            if RojoBuildAutoHealer.auto_fix_type_mismatch(file_path, err["prop_name"], err["expected_type"]):
+                console_terminal_interface.print(
+                    f"[bold green][RojoBuildHealer] ✅ Pattern auto-fix berhasil: {err['file_name']}[/bold green]"
+                )
+                continue
+
+            # Langkah 2: Gemini CLI healing (diagnosis + fix cerdas)
+            if await RojoBuildAutoHealer.heal_with_gemini(agent, file_path, err):
+                console_terminal_interface.print(
+                    f"[bold green][RojoBuildHealer] ✅ Gemini heal berhasil: {err['file_name']}[/bold green]"
+                )
+            else:
+                console_terminal_interface.print(
+                    f"[bold red][RojoBuildHealer] ❌ Gagal heal: {err['file_name']}[/bold red]"
+                )
+                all_fixed = False
+
+        return all_fixed
+
 async def send_telegram_notification(message: str, important: bool = False):
     global _last_telegram_send
 
@@ -149,7 +336,8 @@ async def start_telemetry_webhook():
 
 class RobloxDeployer:
     @staticmethod
-    def compile_rojo() -> bool:
+    def compile_rojo() -> tuple:
+        """Returns (success: bool, stderr: str)"""
         console_terminal_interface.print("[bold yellow][Rojo] Mengompilasi Realitas ke .rbxl...[/bold yellow]")
         try:
             result = subprocess.run(
@@ -157,20 +345,21 @@ class RobloxDeployer:
                 capture_output=True,
                 timeout=120,
             )
+            stderr_str = result.stderr.decode(errors='ignore')
             if result.returncode != 0:
                 console_terminal_interface.print(
-                    f"[bold yellow][Rojo] Build gagal: {result.stderr.decode(errors='ignore')[:200]}[/bold yellow]"
+                    f"[bold yellow][Rojo] Build gagal: {stderr_str[:300]}[/bold yellow]"
                 )
-            return result.returncode == 0
+            return result.returncode == 0, stderr_str
         except FileNotFoundError:
             console_terminal_interface.print("[bold yellow][Rojo] Tidak terinstall. Tahap build dilewati.[/bold yellow]")
-            return False
+            return False, "FileNotFoundError: rojo not installed"
         except subprocess.TimeoutExpired:
             console_terminal_interface.print("[bold yellow][Rojo] Build timeout.[/bold yellow]")
-            return False
+            return False, "TimeoutExpired"
         except Exception as e:
             console_terminal_interface.print(f"[bold yellow][Rojo] Error: {e}[/bold yellow]")
-            return False
+            return False, str(e)
 
     @staticmethod
     async def publish(evolution_level: int):
@@ -804,12 +993,30 @@ async def run_orchestrator():
             # ══════════════════════════════════════════════════════════════
             # Semua file valid → build Rojo + publish ke Roblox
             # ══════════════════════════════════════════════════════════════
-            rojo_ok = RobloxDeployer.compile_rojo()
+            rojo_ok, rojo_stderr = RobloxDeployer.compile_rojo()
+            if not rojo_ok:
+                # Pipeline Auto-Heal Rojo: diagnosa → perbaiki file → retry build (maks 3x)
+                _deploy_agent = ACTIVE_AGENTS[agent_idx % len(ACTIVE_AGENTS)]
+                for _rojo_attempt in range(1, 4):
+                    console_terminal_interface.print(
+                        f"[bold cyan][RojoBuildHealer] Percobaan auto-heal {_rojo_attempt}/3...[/bold cyan]"
+                    )
+                    _healed = await RojoBuildAutoHealer.heal_loop(rojo_stderr, _deploy_agent)
+                    if _healed:
+                        rojo_ok, rojo_stderr = RobloxDeployer.compile_rojo()
+                        if rojo_ok:
+                            console_terminal_interface.print(
+                                "[bold green][RojoBuildHealer] ✅ Rojo build BERHASIL setelah auto-heal![/bold green]"
+                            )
+                            break
+                    if _rojo_attempt < 3:
+                        console_terminal_interface.print(
+                            f"[bold yellow][RojoBuildHealer] Percobaan {_rojo_attempt}/3 gagal. Mencoba lagi...[/bold yellow]"
+                        )
             if not rojo_ok:
                 rojo_fail_msg = (
-                    f"🔨 ROJO BUILD GAGAL (Evolusi {evolution_level})\n"
-                    f"File .rbxl tidak berhasil dibuat.\n"
-                    f"Kemungkinan ada syntax error di file .lua.\n\n"
+                    f"🔨 ROJO BUILD GAGAL setelah 3x auto-heal (Evolusi {evolution_level})\n"
+                    f"Error terakhir: {rojo_stderr[:300]}\n"
                     f"Periksa log VPS: tail -f nexus_healer.log"
                 )
                 console_terminal_interface.print(f"[bold red]{rojo_fail_msg}[/bold red]")
