@@ -1094,36 +1094,56 @@ class RojoBuildAutoHealer:
 
         return all_fixed
 
-async def send_telegram_notification(message: str, important: bool = False):
-    global _last_telegram_send
 
+async def send_telegram_notification(message: str, important: bool = False, document_path: str = None) -> bool:
+    """
+    Mengirim notifikasi atau dokumen ke Telegram dengan sistem Retry
+    dan Timeout 120 Detik (Mencegah Read timed out saat upload build.rbxl).
+    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
+        return False
 
-    async with _telegram_semaphore:
-        now = time.time()
-        elapsed = now - _last_telegram_send
+    url_message = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url_document = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
 
-        if not important and elapsed < _min_interval_between_messages:
-            await asyncio.sleep(_min_interval_between_messages - elapsed)
+    import aiohttp
+    timeout = aiohttp.ClientTimeout(total=120)
 
-        _last_telegram_send = time.time()
-
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-        }
+    for attempt in range(3):
         try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: requests.post(url, json=payload, timeout=10),
-            )
-        except Exception as e:
-            console_terminal_interface.print(f"[dim yellow]Notifikasi Telegram gagal: {e}[/dim yellow]")
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                if document_path and os.path.exists(document_path):
+                    data = aiohttp.FormData()
+                    data.add_field('chat_id', str(TELEGRAM_CHAT_ID))
+                    data.add_field('caption', message)
+                    data.add_field('document', open(document_path, 'rb'))
 
+                    async with session.post(url_document, data=data) as response:
+                        if response.status == 200:
+                            return True
+                        elif response.status == 502:
+                            console_terminal_interface.print(f"[bold yellow][Deploy] Telegram 502 Bad Gateway. Retry {attempt+1}/3...[/bold yellow]")
+                            await asyncio.sleep(5)
+                else:
+                    payload = {
+                        "chat_id": TELEGRAM_CHAT_ID,
+                        "text": message[:4096],
+                        "parse_mode": "HTML"
+                    }
+                    async with session.post(url_message, json=payload) as response:
+                        if response.status == 200:
+                            return True
+                        elif response.status == 429:
+                            await asyncio.sleep(3)
+
+        except asyncio.TimeoutError:
+            console_terminal_interface.print(f"[bold red][Deploy] Telegram API Read timed out. Retry {attempt+1}/3...[/bold red]")
+            await asyncio.sleep(5)
+        except Exception as e:
+            console_terminal_interface.print(f"[bold red][Deploy] Error Telegram HTTP: {e}[/bold red]")
+            await asyncio.sleep(3)
+
+    return False
 
 async def send_telegram_document(file_path: str, caption: str = ""):
     global _last_telegram_send
