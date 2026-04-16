@@ -579,6 +579,122 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                 shutil.rmtree(temp_home_dir, ignore_errors=True)
 
 
+
+
+# =====================================================================
+# AGENT MEMORY + ANTIGRAVITY ORCHESTRATOR (PATCH BARU)
+# =====================================================================
+
+class AgentMemory:
+    """Menyimpan riwayat percakapan untuk konteks multi-turn."""
+    def __init__(self, max_history: int = 10):
+        self._history = []
+        self._max = max_history
+
+    def add_user_message(self, msg: str):
+        self._history.append({"role": "user", "content": msg})
+        if len(self._history) > self._max * 2:
+            self._history = self._history[-(self._max * 2):]
+
+    def add_ai_message(self, msg: str):
+        self._history.append({"role": "ai", "content": msg})
+
+    def get_context_string(self) -> str:
+        if not self._history:
+            return "(Tidak ada riwayat sebelumnya)"
+        lines = []
+        for item in self._history[-10:]:
+            role = "User" if item["role"] == "user" else "AI"
+            lines.append(f"{role}: {item['content'][:300]}")
+        return "\n".join(lines)
+
+
+global_agent_memory = AgentMemory()
+
+
+def inject_antigravity_laws(prompt: str) -> str:
+    """Menyuntikkan hukum-hukum dasar AI ke setiap prompt."""
+    laws = (
+        "[HUKUM ANTIGRAVITY - WAJIB DIPATUHI]:\n"
+        "1. Selalu berikan kode yang lengkap dan bisa langsung dijalankan.\n"
+        "2. Tambahkan komentar singkat dan jelas.\n"
+        "3. Jangan memberikan kode palsu atau placeholder.\n"
+        "4. Gunakan best practice bahasa pemrograman yang diminta.\n"
+        "---\n"
+    )
+    return laws + prompt
+
+
+async def decompose_complex_prompt(complex_prompt: str, model: str) -> list:
+    context_history = global_agent_memory.get_context_string()
+    planner_prompt = f"""
+Anda Orchestrator AI. Pecah permintaan pengguna menjadi array JSON berisi sub-tugas.
+Baca konteks ini jika pengguna memberi perintah lanjutan:
+--- RIWAYAT PERCAKAPAN ---
+{context_history}
+--------------------------
+Permintaan: {complex_prompt}
+Output WAJIB JSON array murni tanpa format markdown.
+"""
+    command = [GEMINI_CLI_PATH, "generate", "--model", model, "--prompt", planner_prompt]
+    try:
+        process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await process.communicate()
+        if process.returncode == 0:
+            clean_json = re.sub(r"```json\n|\n```|```", "", stdout.decode('utf-8').strip()).strip()
+            try:
+                task_list = json.loads(clean_json)
+                if isinstance(task_list, list): return task_list
+            except json.JSONDecodeError:
+                pass
+    except Exception:
+        pass
+    return [complex_prompt]
+
+
+async def execute_antigravity_simple(prompt: str, model: str, max_retries: int = 3) -> str:
+    """Eksekutor CLI sederhana untuk bot Telegram (tanpa agent dict)."""
+    antigravity_prompt = inject_antigravity_laws(prompt)
+    context_history = global_agent_memory.get_context_string()
+    antigravity_prompt = f"Konteks Sebelumnya:\n{context_history}\n\nInstruksi:\n{antigravity_prompt}"
+
+    if "WEAPON_CUSTOMIZATION_ENGINE" in prompt or "Armor" in prompt:
+        antigravity_prompt += "\n\n[FATAL SYSTEM DIRECTIVE]: WAJIB sertakan '-- HitboxSeparation' di awal file."
+
+    command = [GEMINI_CLI_PATH, "generate", "--model", model, "--prompt", antigravity_prompt]
+
+    for attempt in range(max_retries):
+        try:
+            process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await process.communicate()
+            if process.returncode == 0:
+                return stdout.decode('utf-8').strip()
+            else:
+                await asyncio.sleep(3)
+        except Exception:
+            await asyncio.sleep(3)
+    return ""
+
+
+async def execute_antigravity_fleet(complex_prompt: str, model: str) -> str:
+    global_agent_memory.add_user_message(complex_prompt)
+    tasks = await decompose_complex_prompt(complex_prompt, model)
+    combined_results = []
+
+    for i, task in enumerate(tasks, 1):
+        contextual_task = f"Tugas {i}/{len(tasks)}: {task}."
+        result = await execute_antigravity_simple(contextual_task, model)
+        if result: combined_results.append(f"--- HASIL TUGAS {i} ---\n{result}\n")
+        else: combined_results.append(f"--- TUGAS {i} GAGAL ---\n")
+
+    final_output = "\n".join(combined_results)
+    global_agent_memory.add_ai_message(final_output)
+    return final_output
+
+# =====================================================================
+# KELAS ASLI OmniSynthesizerAgent, AutoHealerAgent BERADA DI BAWAH INI
+# =====================================================================
+
 class AutoHealerAgent:
     def __init__(self):
         self.sys_inst = (
