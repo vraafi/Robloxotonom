@@ -1843,12 +1843,12 @@ class OmniSynthesizerAgent:
                 similarity = difflib.SequenceMatcher(None, safe_prev_code, code_attempt).ratio()
 
                 # Threshold diturunkan ke 0.03 (3%) — kode yang diperbaiki total wajar sangat berbeda.
-                  # 0.15 terlalu agresif dan menolak perbaikan yang valid sehingga healer terlihat tidak bekerja.
-                  if similarity < 0.03 or (len(code_attempt.strip()) < 20):
-                      console_terminal_interface.print(
-                          f"[bold red]  [SANITY CHECK GAGAL]: Kode baru hanya {similarity*100:.1f}% mirip DAN sangat pendek — terindikasi kosong/halusinasi. DITOLAK.[/bold red]"
-                      )
-                      return False, f"SANITY_CHECK_FAILED: Kode baru hampir kosong ({similarity*100:.1f}% similarity, {len(code_attempt.strip())} char).", previous_code
+                # 0.15 terlalu agresif dan menolak perbaikan valid sehingga healer terlihat tidak bekerja.
+                if similarity < 0.03 or (len(code_attempt.strip()) < 20):
+                    console_terminal_interface.print(
+                        f"[bold red]  [SANITY CHECK GAGAL]: Kode baru hanya {similarity*100:.1f}% mirip DAN sangat pendek — terindikasi kosong/halusinasi. DITOLAK.[/bold red]"
+                    )
+                    return False, f"SANITY_CHECK_FAILED: Kode baru hampir kosong ({similarity*100:.1f}% similarity, {len(code_attempt.strip())} char).", previous_code
 
             omni_ok, omni_msg = AbsoluteOmniValidator.execute_validation(code_attempt, req_keys, forb_keys)
             if not omni_ok:
