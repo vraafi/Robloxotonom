@@ -2055,3 +2055,69 @@ if __name__ == "__main__":
         asyncio.run(run_orchestrator())
     except SystemExit:
         pass
+        
+# ============================================================
+# PATCH UNTUK nexus_main.py
+# Cari fungsi main() atau bagian startup, tambahkan kode ini
+# ============================================================
+
+# 1. Di bagian IMPORT atas, pastikan ada:
+from nexus_project_scanner import scan_existing_project, scan_deep_validate
+
+# 2. Di dalam fungsi startup / main(), SEBELUM loop utama dimulai:
+async def nexus_startup_sequence():
+    """
+    Jalankan saat sistem pertama kali dinyalakan.
+    Scan mendalam isi semua file Lua — bukan hanya nama.
+    """
+    console_terminal_interface.print("[bold green]Nexus AI v2.0 Startup Sequence...[/bold green]")
+
+    # Scan mendalam + auto-fix
+    validate_result = await scan_deep_validate(auto_fix=True)
+
+    console_terminal_interface.print(
+        f"[bold cyan]Startup Scan Selesai:[/bold cyan]\n"
+        f"  Total: {validate_result['total']} file\n"
+        f"  Valid: {validate_result['valid']} file\n"
+        f"  Auto-fix: {validate_result['fixed']} file\n"
+        f"  Perlu AI: {len(validate_result['need_ai'])} file"
+    )
+
+    if validate_result["need_ai"]:
+        console_terminal_interface.print("[bold yellow]File yang perlu perbaikan AI:[/bold yellow]")
+        for item in validate_result["need_ai"][:5]:
+            console_terminal_interface.print(f"  - {item['file']}: {', '.join(item['issues'])}")
+
+    # Notif ke Telegram
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            msg = (
+                "Nexus AI Agent v2.0 Menyala!\n\n"
+                "Startup Scan Selesai:\n"
+                "Total: " + str(validate_result["total"]) + " file Lua\n"
+                "Auto-fix: " + str(validate_result["fixed"]) + " file\n"
+                "Perlu AI fix: " + str(len(validate_result["need_ai"])) + " file\n\n"
+                + ("Kirim /autofix untuk perbaiki file yang butuh AI." if validate_result["need_ai"] else "Semua file valid! Agent siap.")
+            )
+            await session.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
+                timeout=aiohttp.ClientTimeout(total=30),
+            )
+    except Exception as e:
+        console_terminal_interface.print(f"[yellow]Notif Telegram gagal: {e}[/yellow]")
+
+
+# 3. Di loop utama (while True:), tambahkan cek pause di awal setiap iterasi:
+# Cek pause dari telegram /stop
+try:
+    from nexus_telegram_bot import _roblox_agent_paused, _roblox_background_task
+    if not _roblox_agent_paused.is_set():
+        console_terminal_interface.print("[yellow][Main Loop] PAUSED oleh /stop. Menunggu /continue...[/yellow]")
+        import threading
+        _roblox_agent_paused.wait()  # Blokir sampai /continue dipanggil
+        console_terminal_interface.print("[green][Main Loop] RESUMED.[/green]")
+except ImportError:
+    pass  # Jika telegram bot tidak berjalan, abaikan
+
