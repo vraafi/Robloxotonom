@@ -35,7 +35,11 @@ from nexus_database import (
     save_verified_module,
 )
 from nexus_compiler import NativeLuauCompiler
-from nexus_agents import OmniSynthesizerAgent, AutoHealerAgent, LuauKnowledgeScraper, execute_gemini_cli_pure, extract_pure_luau_code
+from nexus_agents import (
+    OmniSynthesizerAgent, AutoHealerAgent, LuauKnowledgeScraper,
+    execute_gemini_cli_pure, extract_pure_luau_code,
+    NexusGlobalState, _roblox_agent_paused,
+)
 from nexus_healer import PreDeploymentValidator
 from nexus_polyglot import start_telegram_polling
 
@@ -1719,6 +1723,7 @@ async def _run_task_parallel(
                 pass
 
     # ── Eksekusi dengan dedicated agent + file-lock ───────────────────────
+    # ATURAN: Task WAJIB selesai 100% — tidak ada batas retry, tidak ada skip.
     completed = False
     prev_err = ""
     prev_code = ""
@@ -1726,28 +1731,35 @@ async def _run_task_parallel(
 
     import hashlib as _hashlib_loop
     _error_repeat_tracker: dict = {}
+    # Setelah 5x error identik → suntikkan template override atau ganti strategi prompt
+    # Tapi TIDAK PERNAH skip — loop terus sampai completed = True
     _MAX_SAME_ERROR_RETRIES = 5
-    _MAX_TOTAL_RETRIES = 20
 
     file_lock = await _get_file_lock(task_path)
 
+    # Loop tanpa batas — keluar HANYA jika completed = True atau agent di-stop (/stop)
     while not completed:
-        if real_attempt_count >= _MAX_TOTAL_RETRIES:
+
+        # Cek pause dari Telegram (/stop)
+        if not _roblox_agent_paused.is_set():
             console_terminal_interface.print(
-                f"[bold red]  [{dedicated_agent['name']}] BATAS TOTAL RETRY ({_MAX_TOTAL_RETRIES}) TERCAPAI untuk {task_name}. Task DISKIP.[/bold red]"
+                f"[bold yellow]  [{dedicated_agent['name']}] PAUSE — menunggu /continue ...[/bold yellow]"
             )
-            await send_telegram_notification(
-                f"⚠️ [{dedicated_agent['name']}] TASK DISKIP (max retry)\n"
-                f"📄 {task_name}\n"
-                f"❌ Error terakhir: {prev_err[:200]}",
-                important=True,
+            import asyncio as _aio_local
+            loop = _aio_local.get_running_loop()
+            await loop.run_in_executor(None, _roblox_agent_paused.wait)
+            console_terminal_interface.print(
+                f"[bold green]  [{dedicated_agent['name']}] RESUME — melanjutkan {task_name}[/bold green]"
             )
-            return (False, task_name, f"MAX_RETRY_EXCEEDED: {prev_err[:100]}")
+
+        # Cek stop global
+        if not NexusGlobalState.is_running:
+            return (False, task_name, "STOPPED_BY_USER")
 
         console_terminal_interface.print(
             f"[bold cyan]  [{dedicated_agent['name']}] "
             f"Task {task_num}/{total_tasks}: {task_name} — "
-            f"Percobaan {real_attempt_count + 1}/{_MAX_TOTAL_RETRIES}[/bold cyan]"
+            f"Percobaan {real_attempt_count + 1} (infinite retry)[/bold cyan]"
         )
         try:
             async with file_lock:
@@ -1774,26 +1786,29 @@ async def _run_task_parallel(
             )
             return (True, task_name, "done")
 
+        # Rate limit → tunggu lebih lama
         if "RATE_LIMIT" in prev_err:
             console_terminal_interface.print(
-                f"[bold yellow]  [{dedicated_agent['name']}] Rate limit → retry 5s...[/bold yellow]"
+                f"[bold yellow]  [{dedicated_agent['name']}] Rate limit → retry 30s...[/bold yellow]"
             )
-            await asyncio.sleep(5)
+            await asyncio.sleep(30)
             continue
 
         _err_hash = _hashlib_loop.md5(prev_err.strip().encode()).hexdigest()[:12]
         _error_repeat_tracker[_err_hash] = _error_repeat_tracker.get(_err_hash, 0) + 1
 
+        # Error identik berulang → suntikkan template atau ganti strategi
         if _error_repeat_tracker[_err_hash] >= _MAX_SAME_ERROR_RETRIES:
             console_terminal_interface.print(
-                f"[bold red]  [STUCK LOOP] Error identik terdeteksi {_MAX_SAME_ERROR_RETRIES}x untuk {task_name}. "
-                f"Mengaktifkan TEMPLATE OVERRIDE...[/bold red]"
+                f"[bold red]  [STUCK LOOP] Error identik {_MAX_SAME_ERROR_RETRIES}x untuk {task_name}. "
+                f"Suntikkan template / ganti strategi...[/bold red]"
             )
             _override = _get_stuck_loop_template_override(task_name, task["forb"])
             if _override:
                 prev_err = (
                     f"[STUCK LOOP OVERRIDE — ITERASI KE-{_error_repeat_tracker[_err_hash]}]\n"
-                    f"Error sebelumnya SAMA PERSIS sudah {_MAX_SAME_ERROR_RETRIES}x. AI WAJIB menggunakan template kode berikut TANPA MODIFIKASI:\n"
+                    f"Error sebelumnya SAMA PERSIS sudah {_MAX_SAME_ERROR_RETRIES}x. "
+                    f"AI WAJIB menggunakan template kode berikut TANPA MODIFIKASI:\n"
                     f"{_override}\n"
                     f"DILARANG mengubah template di atas. Salin PERSIS ke output.\n"
                     f"Error asli: {prev_err[:300]}"
@@ -1802,15 +1817,28 @@ async def _run_task_parallel(
                     f"[bold magenta]  [TEMPLATE OVERRIDE] Template darurat disuntikkan untuk {task_name}[/bold magenta]"
                 )
             else:
-                console_terminal_interface.print(
-                    f"[bold red]  [SKIP] Tidak ada template override untuk {task_name}. Task DISKIP.[/bold red]"
+                # Tidak ada template → ganti strategi dengan prompt yang berbeda total
+                prev_err = (
+                    f"[GANTI STRATEGI — PERCOBAAN KE-{real_attempt_count + 1}]\n"
+                    f"Pendekatan sebelumnya gagal {_MAX_SAME_ERROR_RETRIES}x dengan error yang sama.\n"
+                    f"WAJIB gunakan pendekatan BERBEDA TOTAL — tulis ulang dari nol.\n"
+                    f"Error asli: {prev_err[:200]}"
                 )
-                return (False, task_name, f"STUCK_LOOP_NO_TEMPLATE: {prev_err[:100]}")
+                # Reset error tracker untuk strategi baru
+                _error_repeat_tracker.clear()
+                console_terminal_interface.print(
+                    f"[bold yellow]  [STRATEGI BARU] Reset prompt, pendekatan berbeda untuk {task_name}[/bold yellow]"
+                )
+
+            await send_telegram_notification(
+                f"🔄 [{dedicated_agent['name']}] Stuck loop terdeteksi → ganti strategi\n"
+                f"📄 {task_name} | Percobaan ke-{real_attempt_count + 1}",
+                important=True,
+            )
 
         real_attempt_count += 1
-        backoff_delay = min(real_attempt_count * 2, 10)
-        if real_attempt_count > 0:
-            await asyncio.sleep(backoff_delay)
+        backoff_delay = min(real_attempt_count * 2, 30)
+        await asyncio.sleep(backoff_delay)
 
     return (False, task_name, prev_err[:120])
 
@@ -1865,10 +1893,13 @@ async def run_orchestrator():
 
             total_tasks = len(task_queue)
 
+            n_workers = len(ACTIVE_AGENTS)  # Maks concurrent = jumlah API key
+
             console_terminal_interface.print(
                 Panel(
-                    f"[bold cyan]⚡ PARALLEL EXECUTION AKTIF\n"
-                    f"({total_tasks} tasks × {len(ACTIVE_AGENTS)} agents dedicated — tidak antri)\n"
+                    f"[bold cyan]⚡ WORKER POOL AKTIF\n"
+                    f"{total_tasks} task dalam antrian — {n_workers} worker berjalan paralel\n"
+                    f"Setiap worker ambil 1 task → kerjakan sampai LULUS → ambil berikutnya\n"
                     f"Evolusi {evolution_level} | Siklus {generation_counter}[/bold cyan]"
                 )
             )
@@ -1876,28 +1907,45 @@ async def run_orchestrator():
             # Notifikasi Telegram: evolusi dimulai
             await send_telegram_notification(
                 f"🚀 EVOLUSI {evolution_level} DIMULAI\n"
-                f"⚡ {total_tasks} task berjalan PARALEL\n"
-                f"👥 {len(ACTIVE_AGENTS)} agent dedicated (tidak ada antrian)\n"
+                f"📋 {total_tasks} task dalam antrian\n"
+                f"👥 {n_workers} worker paralel (1 per API key)\n"
                 f"🔁 Siklus ke-{generation_counter}",
                 important=True,
             )
 
-            # Buat worker per task — masing-masing dapat agent sendiri (index-locked)
-            _parallel_workers = [
-                _run_task_parallel(
-                    task_num=i + 1,
-                    total_tasks=total_tasks,
-                    task=task,
-                    dedicated_agent=ACTIVE_AGENTS[i % len(ACTIVE_AGENTS)],
-                    synthesizer=synthesizer,
-                    generation_counter=generation_counter,
-                    evolution_level=evolution_level,
-                )
-                for i, task in enumerate(task_queue)
-            ]
+            # ── Worker Pool: N worker, masing-masing ambil task dari antrian ──
+            # Tidak ada asyncio.gather(*semua_task) — hanya N coroutine berjalan
+            _evo_task_queue: asyncio.Queue = asyncio.Queue()
+            for i, task in enumerate(task_queue):
+                await _evo_task_queue.put((i, task))
 
-            # ⚡ Semua task berjalan bersamaan — tidak saling tunggu
-            _parallel_results = await asyncio.gather(*_parallel_workers, return_exceptions=True)
+            _parallel_results: list = []
+            _results_lock = asyncio.Lock()
+
+            async def _pool_worker(worker_id: int):
+                """Satu worker = satu API key. Ambil task → selesaikan → ambil berikutnya."""
+                dedicated_agent = ACTIVE_AGENTS[worker_id % len(ACTIVE_AGENTS)]
+                while True:
+                    try:
+                        i, task = _evo_task_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return  # Antrian habis, worker selesai
+
+                    result = await _run_task_parallel(
+                        task_num=i + 1,
+                        total_tasks=total_tasks,
+                        task=task,
+                        dedicated_agent=dedicated_agent,
+                        synthesizer=synthesizer,
+                        generation_counter=generation_counter,
+                        evolution_level=evolution_level,
+                    )
+                    async with _results_lock:
+                        _parallel_results.append(result)
+                    _evo_task_queue.task_done()
+
+            # Jalankan tepat N worker — bukan len(task_queue) worker!
+            await asyncio.gather(*[_pool_worker(i) for i in range(n_workers)])
 
             # Hitung hasil
             tasks_done = sum(1 for r in _parallel_results if isinstance(r, tuple) and r[0])
@@ -2109,15 +2157,6 @@ async def nexus_startup_sequence():
         console_terminal_interface.print(f"[yellow]Notif Telegram gagal: {e}[/yellow]")
 
 
-# 3. Di loop utama (while True:), tambahkan cek pause di awal setiap iterasi:
-# Cek pause dari telegram /stop
-try:
-    from nexus_telegram_bot import _roblox_agent_paused, _roblox_background_task
-    if not _roblox_agent_paused.is_set():
-        console_terminal_interface.print("[yellow][Main Loop] PAUSED oleh /stop. Menunggu /continue...[/yellow]")
-        import threading
-        _roblox_agent_paused.wait()  # Blokir sampai /continue dipanggil
-        console_terminal_interface.print("[green][Main Loop] RESUMED.[/green]")
-except ImportError:
-    pass  # Jika telegram bot tidak berjalan, abaikan
+# _roblox_agent_paused diimport dari nexus_agents (sumber kebenaran tunggal)
+# Tidak perlu import ulang dari nexus_telegram_bot (circular import)
 
