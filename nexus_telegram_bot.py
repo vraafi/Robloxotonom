@@ -1,10 +1,10 @@
 """
-nexus_telegram_bot.py  v2.0.0
+nexus_telegram_bot.py  v3.0.0
 ==============================
 Bot Telegram Interaktif — Antarmuka Manusia ke AI Agent Otonom Nexus.
 
 Perintah Utama:
-  /start    — Menu utama
+  /start    — Menu utama dengan tombol STOP dan LANJUTKAN
   /stop     — Hentikan background task AI Roblox
   /continue — Lanjutkan AI Roblox
   /status   — Status lengkap agent
@@ -13,15 +13,12 @@ Perintah Utama:
   /clear    — Reset percakapan
   /help     — Panduan lengkap
 
-Perbaikan v2.0.0:
-  - Owner TIDAK PERNAH kena rate limit / ditolak
-  - Gemini retry otomatis (rotasi model + key), tidak pernah bilang "sibuk"
-  - /stop  -- hentikan background task AI Roblox
-  - /continue -- lanjutkan AI Roblox
-  - /selffix -- AI perbaiki kode sendiri + sandbox test + push GitHub
-  - Scan mendalam isi file saat startup (bukan hanya nama file)
-  - Sandbox wajib sebelum setiap push kode ke GitHub
-  - Fungsi duplikat v1.0.0 dihapus — hanya v2.0.0 yang aktif
+Perbaikan v3.0.0:
+  - Tombol STOP dan LANJUTKAN muncul di setiap pesan (tidak perlu ketik perintah)
+  - Mode "Chat Langsung" — bicara langsung ke AI untuk memberi perintah spesifik
+  - Progress task dilaporkan LANGSUNG ke Telegram (tidak ghosting lagi)
+  - Setiap task diberi nomor, status sukses/gagal dikirim real-time
+  - AI TIDAK pernah diam — selalu kirim update setiap langkah
 """
 
 import os
@@ -51,7 +48,7 @@ from telegram.ext import (
     ContextTypes,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter, TimedOut
 
 from nexus_config import (
     TELEGRAM_BOT_TOKEN,
@@ -64,8 +61,6 @@ from nexus_config import (
     console_terminal_interface,
 )
 
-# Impor dari nexus_agents — termasuk _roblox_agent_paused agar keduanya
-# menggunakan objek Event yang SAMA (menghindari dua objek terpisah).
 from nexus_agents import (
     execute_antigravity_fleet,
     NexusGlobalState,
@@ -77,18 +72,15 @@ from nexus_agents import (
 # ================================================
 # KONSTANTA & STATE GLOBAL
 # ================================================
-_BOT_VERSION = "2.0.0"
+_BOT_VERSION = "3.0.0"
 _OWNER_CHAT_ID = str(TELEGRAM_CHAT_ID).strip()
 _user_state: dict = {}
 _roblox_exec_lock = asyncio.Semaphore(1)
-
-# ================================================
-# STOP / CONTINUE STATE
-# ================================================
 _roblox_background_task: Optional[asyncio.Task] = None
+_bot_app: Optional[object] = None  # Referensi global ke Application
 
 # ================================================
-# RATE LIMITING -- OWNER TIDAK PERNAH DITOLAK
+# RATE LIMITING — OWNER TIDAK PERNAH DITOLAK
 # ================================================
 _RATE_LIMIT_WINDOW = 10
 _RATE_LIMIT_MAX = 30
@@ -110,7 +102,7 @@ MODEL_FALLBACK_SEQUENCE = [
 
 def _check_rate_limit(chat_id: int) -> bool:
     if str(chat_id) == _OWNER_CHAT_ID:
-        return False  # Owner selalu bebas
+        return False
     now = time.time()
     _user_message_timestamps[chat_id] = [
         t for t in _user_message_timestamps[chat_id] if now - t < _RATE_LIMIT_WINDOW
@@ -122,7 +114,69 @@ def _check_rate_limit(chat_id: int) -> bool:
 
 
 # ================================================
-# GEMINI CLI -- TIDAK PERNAH MENOLAK, SELALU RETRY
+# HELPER: TOMBOL KONTROL (STOP / LANJUTKAN)
+# ================================================
+def _control_keyboard(show_stop: bool = True) -> InlineKeyboardMarkup:
+    """Selalu tampilkan tombol Stop dan Lanjutkan di setiap pesan penting."""
+    buttons = []
+    if show_stop:
+        buttons.append(InlineKeyboardButton("STOP ⛔", callback_data="ctrl_stop"))
+    buttons.append(InlineKeyboardButton("LANJUTKAN ▶", callback_data="ctrl_continue"))
+    buttons.append(InlineKeyboardButton("STATUS ℹ", callback_data="ctrl_status"))
+    return InlineKeyboardMarkup([buttons])
+
+
+def _main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Menu utama dengan semua opsi."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("AI Agent Roblox (Otonom) 🤖", callback_data="mode_roblox")],
+        [InlineKeyboardButton("Chat Langsung AI 💬", callback_data="mode_chat")],
+        [InlineKeyboardButton("Universal Agent 🌐", callback_data="mode_universal")],
+        [
+            InlineKeyboardButton("STOP ⛔", callback_data="ctrl_stop"),
+            InlineKeyboardButton("LANJUTKAN ▶", callback_data="ctrl_continue"),
+        ],
+        [InlineKeyboardButton("STATUS ℹ", callback_data="ctrl_status")],
+    ])
+
+
+async def _safe_edit(msg: Message, text: str, reply_markup=None) -> None:
+    """Edit pesan dengan aman — tidak crash jika konten sama atau pesan dihapus."""
+    try:
+        kwargs = {"text": text[:4090]}
+        if reply_markup is not None:
+            kwargs["reply_markup"] = reply_markup
+        await msg.edit_text(**kwargs)
+    except BadRequest as e:
+        err = str(e).lower()
+        if "message is not modified" in err or "message to edit not found" in err:
+            pass
+        else:
+            console_terminal_interface.print(f"[yellow][safe_edit] {e}[/yellow]")
+    except (RetryAfter, TimedOut):
+        await asyncio.sleep(3)
+
+
+async def _safe_send(bot, chat_id: str, text: str, reply_markup=None) -> Optional[Message]:
+    """Kirim pesan dengan aman, retry jika rate limit."""
+    for attempt in range(3):
+        try:
+            kwargs = {"chat_id": chat_id, "text": text[:4090]}
+            if reply_markup is not None:
+                kwargs["reply_markup"] = reply_markup
+            return await bot.send_message(**kwargs)
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+        except TimedOut:
+            await asyncio.sleep(5)
+        except Exception as e:
+            console_terminal_interface.print(f"[red][safe_send] {e}[/red]")
+            return None
+    return None
+
+
+# ================================================
+# GEMINI CLI — TIDAK PERNAH MENOLAK, SELALU RETRY
 # ================================================
 def _call_gemini_sync(prompt: str, api_key: str, model: str = "gemini-2.0-flash") -> str:
     env = os.environ.copy()
@@ -182,14 +236,6 @@ async def _call_gemini(prompt: str, max_retries: int = 15) -> str:
 # ================================================
 # HELPER FUNCTIONS
 # ================================================
-def _rojo_build_sync() -> tuple:
-    try:
-        from nexus_main import RobloxDeployer
-        return RobloxDeployer.compile_rojo()
-    except Exception as e:
-        return False, str(e)
-
-
 def _find_lua_file_by_name(name: str) -> Optional[str]:
     name_lower = name.lower().replace(" ", "_").replace("-", "_")
     best = None
@@ -218,7 +264,7 @@ def _find_lua_file_by_name(name: str) -> Optional[str]:
 # SANDBOX: Test kode sebelum push ke GitHub
 # ================================================
 async def _sandbox_test_file(file_path: str, new_content: str, send_fn) -> bool:
-    await send_fn("Sandbox Testing -- menguji kode di lingkungan terisolasi...")
+    await send_fn("Sandbox Testing — menguji kode di lingkungan terisolasi...")
 
     sandbox_dir = tempfile.mkdtemp(prefix="nexus_sandbox_")
     try:
@@ -233,7 +279,7 @@ async def _sandbox_test_file(file_path: str, new_content: str, send_fn) -> bool:
             )
             if r.returncode != 0:
                 await send_fn(
-                    "Sandbox GAGAL -- Syntax Error\n"
+                    "Sandbox GAGAL — Syntax Error\n"
                     + r.stderr[:400]
                     + "\nKode TIDAK di-push. AI akan memperbaiki ulang."
                 )
@@ -261,7 +307,7 @@ async def _git_push(repo_dir: str, file_rel_path: str, commit_msg: str, send_fn)
         or os.getenv("GITHUB_TOKEN", "")
     )
     if not github_token:
-        await send_fn("GITHUB_TOKEN tidak ditemukan di .env.nexus. Tambahkan: GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxxx")
+        await send_fn("GITHUB_TOKEN tidak ditemukan. Tambahkan: GITHUB_PERSONAL_ACCESS_TOKEN=ghp_xxxx")
         return False
 
     try:
@@ -286,11 +332,15 @@ async def _git_push(repo_dir: str, file_rel_path: str, commit_msg: str, send_fn)
 
 
 # ================================================
-# STARTUP SCAN: Baca ISI file saat agent nyala
+# STARTUP SCAN
 # ================================================
 async def _startup_deep_scan(send_fn):
     if not os.path.exists(SOURCE_CODE_DIRECTORY):
-        await send_fn("Direktori src belum ada. Sistem mulai dari nol.")
+        await send_fn(
+            "Nexus AI Agent v" + _BOT_VERSION + " Menyala!\n\n"
+            "Direktori src belum ada. Sistem mulai dari nol.\n\n"
+            "Kirim /start untuk mulai memberi perintah."
+        )
         return
 
     lua_files = []
@@ -300,12 +350,6 @@ async def _startup_deep_scan(send_fn):
             if fname.endswith((".lua", ".luau")):
                 lua_files.append(os.path.join(root, fname))
 
-    await send_fn(
-        "Nexus AI Agent v" + _BOT_VERSION + " Menyala!\n"
-        "Scan mendalam " + str(len(lua_files)) + " file Lua...\n"
-        "(Membaca ISI setiap file, bukan hanya nama)"
-    )
-
     violations = []
     for fpath in lua_files:
         fname = os.path.basename(fpath)
@@ -314,47 +358,39 @@ async def _startup_deep_scan(send_fn):
             with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
             lines = content.split("\n")
-
             if not lines or lines[0].strip() != "--!strict":
                 issues.append("Tidak ada --!strict")
-
             for i, line in enumerate(lines, 1):
                 if "DisplayOrder" in line and "Enum." in line:
                     issues.append(f"Baris {i}: DisplayOrder pakai Enum")
                 if "ZIndex" in line and "Enum." in line:
                     issues.append(f"Baris {i}: ZIndex pakai Enum")
-
             if fname.endswith(".server.lua") and "game.Players.LocalPlayer" in content:
                 issues.append("Server script pakai LocalPlayer")
-
             if len(content.strip()) < 5:
                 issues.append("File kosong / tidak valid")
-
         except Exception as e:
             issues.append(f"Gagal baca: {e}")
-
         if issues:
             violations.append((fname, issues))
 
+    status_text = (
+        "NEXUS AI AGENT v" + _BOT_VERSION + " SIAP!\n\n"
+        "Scan " + str(len(lua_files)) + " file Lua selesai.\n"
+    )
     if violations:
-        report = str(len(violations)) + " file bermasalah ditemukan:\n\n"
-        for fname, issues in violations[:10]:
-            report += "* " + fname + ":\n"
-            for iss in issues:
-                report += "  - " + iss + "\n"
-        if len(violations) > 10:
-            report += "\n...dan " + str(len(violations) - 10) + " file lainnya."
-        report += "\n\nKirim /autofix untuk perbaiki otomatis."
-        await send_fn(report)
+        status_text += str(len(violations)) + " file bermasalah ditemukan.\nKirim /autofix untuk perbaiki.\n\n"
+        for fname, issues in violations[:5]:
+            status_text += "* " + fname + ": " + issues[0] + "\n"
     else:
-        await send_fn(
-            "Scan Selesai -- Semua " + str(len(lua_files)) + " file valid!\n"
-            "Agent siap menerima perintah."
-        )
+        status_text += "Semua file valid!\n\n"
+
+    status_text += "Kirim /start untuk mulai memberi perintah."
+    await send_fn(status_text)
 
 
 # ================================================
-# TASK EXECUTOR dengan PERSISTENT RETRY
+# TASK EXECUTOR — DENGAN PROGRESS REAL-TIME
 # ================================================
 async def execute_single_task_with_retry(task: dict, send_fn, max_attempts: int = 10) -> tuple:
     from nexus_agents import LuauKnowledgeScraper
@@ -364,7 +400,10 @@ async def execute_single_task_with_retry(task: dict, send_fn, max_attempts: int 
 
     for attempt in range(1, max_attempts + 1):
         if not _roblox_agent_paused.is_set():
-            await send_fn("Agent sedang di-pause. Menunggu /continue...")
+            await send_fn(
+                "Agent di-PAUSE.\n\n"
+                "Tekan tombol LANJUTKAN atau kirim /continue untuk melanjutkan."
+            )
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, _roblox_agent_paused.wait)
             await send_fn("Agent dilanjutkan! Melanjutkan task...")
@@ -383,14 +422,19 @@ async def execute_single_task_with_retry(task: dict, send_fn, max_attempts: int 
 
         if attempt < max_attempts:
             wait = min(10 * attempt, 60)
+            await send_fn(
+                f"Percobaan {attempt}/{max_attempts} gagal.\n"
+                f"Error: {last_error[:200]}\n\n"
+                f"Mencoba lagi dalam {wait} detik..."
+            )
             await asyncio.sleep(wait)
 
     await send_fn(
         "AI Butuh Bantuan!\n\n"
         "Task: " + task.get("title", "unknown") + "\n"
-        "Sudah " + str(max_attempts) + "x gagal (termasuk pencarian panduan GitHub).\n\n"
+        "Sudah " + str(max_attempts) + "x gagal.\n\n"
         "Error terakhir:\n" + last_error[:400] + "\n\n"
-        "Tolong balas dengan instruksi tambahan atau ubah pendekatan."
+        "Balas dengan instruksi tambahan atau pendekatan berbeda."
     )
 
     _user_state["waiting_for_owner_input"] = {
@@ -423,7 +467,7 @@ async def execute_single_task(task: dict, extra_context: str = "") -> tuple:
         file_path = os.path.join(SOURCE_CODE_DIRECTORY, folder, fname)
 
     code_context = (
-        "(File baru -- belum ada kode sebelumnya)"
+        "(File baru — belum ada kode sebelumnya)"
         if not original_code
         else original_code[:4000] + ("..." if len(original_code) > 4000 else "")
     )
@@ -438,7 +482,7 @@ async def execute_single_task(task: dict, extra_context: str = "") -> tuple:
     ctx_extra = ("KONTEKS TAMBAHAN DARI GITHUB:\n" + extra_context) if extra_context else ""
 
     prompt = (
-        "Kamu adalah senior Roblox Luau developer. Perbaiki atau buat kode untuk game FantasyExtraction/TrueApex.\n\n"
+        "Kamu adalah senior Roblox Luau developer. Perbaiki atau buat kode untuk game.\n\n"
         "TUGAS:\n" + detail + "\n\n"
         "TIPE FILE: " + file_type + "\n"
         "AKSI: " + action + "\n\n"
@@ -448,7 +492,7 @@ async def execute_single_task(task: dict, extra_context: str = "") -> tuple:
         "1. Baris pertama HARUS --!strict\n"
         "2. Jangan gunakan Enum untuk DisplayOrder, ZIndex, LayoutOrder (gunakan angka integer)\n"
         "3. Spawn point player HARUS menggunakan game.Workspace.SpawnLocation atau Teams\n"
-        "4. Tombol UI HARUS memiliki event handler\n"
+        "4. Tombol UI HARUS memiliki event handler yang berfungsi\n"
         "5. HANYA output kode Luau murni, tidak ada penjelasan\n\n"
         "KODE YANG SUDAH DIPERBAIKI:"
     )
@@ -476,13 +520,23 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if chat_id != _OWNER_CHAT_ID:
         await update.message.reply_text("Bot ini pribadi. Akses ditolak.")
         return
-    keyboard = [
-        [InlineKeyboardButton("Roblox Agent", callback_data="mode_roblox")],
-        [InlineKeyboardButton("Universal Agent", callback_data="mode_universal")],
-    ]
+
+    paused = not _roblox_agent_paused.is_set()
+    bg_running = _roblox_background_task and not _roblox_background_task.done()
+
+    status_line = (
+        "Agent: PAUSE ⛔" if paused else
+        ("Agent: BERJALAN ▶" if bg_running else "Agent: STANDBY")
+    )
+
     await update.message.reply_text(
-        "NEXUS AI AGENT v" + _BOT_VERSION + "\n\nPilih mode:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        "NEXUS AI AGENT v" + _BOT_VERSION + "\n"
+        + status_line + "\n\n"
+        "Pilih mode atau gunakan tombol kontrol:\n\n"
+        "AI Agent Roblox — Beri laporan bug/fitur, AI kerjakan otomatis\n"
+        "Chat Langsung AI — Bicara langsung ke AI, beri perintah spesifik\n"
+        "Universal Agent — Minta kode apapun (Python, JS, dll)",
+        reply_markup=_main_menu_keyboard(),
     )
 
 
@@ -490,12 +544,20 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     if chat_id != _OWNER_CHAT_ID:
         return
+    await _do_stop(update.message.reply_text)
 
+
+async def cmd_continue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = str(update.effective_chat.id)
+    if chat_id != _OWNER_CHAT_ID:
+        return
+    await _do_continue(update.message.reply_text)
+
+
+async def _do_stop(reply_fn):
     global _roblox_background_task
-
     _roblox_agent_paused.clear()
     NexusGlobalState.is_running = False
-
     if _roblox_background_task and not _roblox_background_task.done():
         _roblox_background_task.cancel()
         try:
@@ -503,24 +565,22 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except asyncio.CancelledError:
             pass
         _roblox_background_task = None
-
-    await update.message.reply_text(
-        "AI Agent Roblox DIHENTIKAN\n\n"
+    await reply_fn(
+        "AI Agent DIHENTIKAN ⛔\n\n"
         "Semua pekerjaan background dihentikan.\n"
-        "Kirim /continue untuk melanjutkan, atau beri perintah baru langsung."
+        "Gunakan tombol LANJUTKAN atau /continue untuk melanjutkan.",
+        reply_markup=_control_keyboard(show_stop=False),
     )
 
 
-async def cmd_continue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = str(update.effective_chat.id)
-    if chat_id != _OWNER_CHAT_ID:
-        return
-
+async def _do_continue(reply_fn):
     _roblox_agent_paused.set()
     NexusGlobalState.is_running = True
-
-    await update.message.reply_text(
-        "AI Agent Roblox DILANJUTKAN\n\nAgent siap menerima perintah baru."
+    await reply_fn(
+        "AI Agent DILANJUTKAN ▶\n\n"
+        "Agent siap menerima perintah.\n"
+        "Kirim pesan atau pilih mode dari /start.",
+        reply_markup=_control_keyboard(show_stop=True),
     )
 
 
@@ -528,26 +588,26 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat_id = str(update.effective_chat.id)
     if chat_id != _OWNER_CHAT_ID:
         return
+    await _send_status(update.message.reply_text)
 
+
+async def _send_status(reply_fn):
     paused = not _roblox_agent_paused.is_set()
     bg_running = _roblox_background_task and not _roblox_background_task.done()
-    mode = _user_state.get(chat_id, {}).get("mode", "belum dipilih")
 
-    await update.message.reply_text(
+    text = (
         "STATUS NEXUS AI AGENT v" + _BOT_VERSION + "\n\n"
-        "Agent Roblox: " + ("PAUSE" if paused else "AKTIF") + "\n"
-        "Background Task: " + ("Berjalan" if bg_running else "Idle") + "\n"
-        "Mode Aktif: " + mode + "\n"
+        "Agent Roblox: " + ("PAUSE ⛔" if paused else "AKTIF ▶") + "\n"
+        "Background Task: " + ("Berjalan..." if bg_running else "Idle") + "\n"
         "API Keys: " + str(len(ACTIVE_AGENTS)) + " aktif\n"
-        "Loop Status: " + ("RUNNING" if NexusGlobalState.is_running else "STOPPED") + "\n\n"
-        "Perintah:\n"
-        "/stop -- Hentikan background task\n"
-        "/continue -- Lanjutkan agent\n"
-        "/selffix [file] [deskripsi] -- AI perbaiki & push kode\n"
-        "/autofix -- Perbaiki semua file bermasalah\n"
-        "/clear -- Reset percakapan\n"
-        "/help -- Panduan lengkap"
+        "Loop: " + ("RUNNING" if NexusGlobalState.is_running else "STOPPED") + "\n\n"
+        "Perintah cepat:\n"
+        "/stop — Hentikan\n"
+        "/continue — Lanjutkan\n"
+        "/autofix — Perbaiki file Lua\n"
+        "/clear — Reset percakapan"
     )
+    await reply_fn(text, reply_markup=_control_keyboard(show_stop=not paused))
 
 
 async def cmd_selffix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -560,7 +620,8 @@ async def cmd_selffix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     fix_desc = " ".join(args[1:]) if len(args) > 1 else "Perbaiki semua bug yang ada, tingkatkan robustness"
 
     msg = await update.message.reply_text(
-        "Self-Fix Dimulai\n\nFile: " + target_file + "\nInstruksi: " + fix_desc + "\n\nMembaca file asli..."
+        "Self-Fix Dimulai\n\nFile: " + target_file + "\nInstruksi: " + fix_desc + "\n\nMembaca file asli...",
+        reply_markup=_control_keyboard(),
     )
 
     repo_dir = os.path.dirname(os.path.abspath(__file__))
@@ -568,14 +629,15 @@ async def cmd_selffix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not os.path.exists(file_path):
         file_path = os.path.join(PROJECT_ROOT_DIRECTORY, target_file)
     if not os.path.exists(file_path):
-        await msg.edit_text("File " + target_file + " tidak ditemukan.")
+        await _safe_edit(msg, "File " + target_file + " tidak ditemukan.")
         return
 
     with open(file_path, "r", encoding="utf-8") as f:
         original_code = f.read()
 
-    await msg.edit_text(
-        "Self-Fix 2/5\n\nFile dibaca (" + str(len(original_code)) + " karakter)\nMeminta AI memperbaiki..."
+    await _safe_edit(
+        msg,
+        "Self-Fix 2/5\n\nFile dibaca (" + str(len(original_code)) + " karakter)\nMeminta AI memperbaiki...",
     )
 
     prompt = (
@@ -596,19 +658,19 @@ async def cmd_selffix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     fixed_code = re.sub(r"\n?```\s*$", "", fixed_code).strip()
 
     if not fixed_code or len(fixed_code) < 100:
-        await msg.edit_text("AI gagal generate kode perbaikan. Coba lagi.")
+        await _safe_edit(msg, "AI gagal generate kode perbaikan. Coba lagi.")
         return
 
-    await msg.edit_text("Self-Fix 3/5\n\nAI selesai generate kode baru\nSandbox testing...")
+    await _safe_edit(msg, "Self-Fix 3/5\n\nAI selesai generate kode\nSandbox testing...")
 
     async def send_to_msg(text):
-        await msg.edit_text(text)
+        await _safe_edit(msg, text)
 
     sandbox_ok = await _sandbox_test_file(file_path, fixed_code, send_to_msg)
     if not sandbox_ok:
         return
 
-    await msg.edit_text("Self-Fix 4/5\n\nSandbox OK\nMenyimpan & push ke GitHub...")
+    await _safe_edit(msg, "Self-Fix 4/5\n\nSandbox OK\nMenyimpan & push ke GitHub...")
 
     backup_path = file_path + ".bak"
     shutil.copy2(file_path, backup_path)
@@ -618,12 +680,13 @@ async def cmd_selffix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     commit_msg = "[nexus_selffix] Auto-fix " + target_file + ": " + fix_desc[:60]
     await _git_push(repo_dir, target_file, commit_msg, send_to_msg)
 
-    await msg.edit_text(
+    await _safe_edit(
+        msg,
         "Self-Fix Selesai!\n\n"
         "File " + target_file + " berhasil diperbaiki.\n"
-        "Backup disimpan di " + target_file + ".bak\n\n"
-        "Restart bot untuk menerapkan perubahan:\n"
-        "systemctl restart nexus-bot"
+        "Backup: " + target_file + ".bak\n\n"
+        "Restart bot untuk menerapkan:\nsystemctl restart nexus-bot",
+        reply_markup=_control_keyboard(),
     )
 
 
@@ -632,7 +695,10 @@ async def cmd_autofix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if chat_id != _OWNER_CHAT_ID:
         return
 
-    msg = await update.message.reply_text("Auto-Fix Dimulai -- Scanning semua file...")
+    msg = await update.message.reply_text(
+        "Auto-Fix Dimulai — Scanning semua file...",
+        reply_markup=_control_keyboard(),
+    )
 
     violations = []
     lua_files = []
@@ -661,10 +727,10 @@ async def cmd_autofix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             pass
 
     if not violations:
-        await msg.edit_text("Semua file sudah valid! Tidak ada yang perlu diperbaiki.")
+        await _safe_edit(msg, "Semua file sudah valid! Tidak ada yang perlu diperbaiki.")
         return
 
-    await msg.edit_text("Auto-Fix: " + str(len(violations)) + " file bermasalah -- Memperbaiki...")
+    await _safe_edit(msg, "Auto-Fix: " + str(len(violations)) + " file bermasalah — Memperbaiki...")
 
     fixed_count = 0
     for fpath, content, issues in violations:
@@ -680,10 +746,12 @@ async def cmd_autofix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f.write(new_content)
         fixed_count += 1
 
-    await msg.edit_text(
+    await _safe_edit(
+        msg,
         "Auto-Fix Selesai!\n\n"
         "Diperbaiki: " + str(fixed_count) + "/" + str(len(violations)) + " file\n"
-        "Jalankan build ulang untuk memverifikasi."
+        "Jalankan build ulang untuk memverifikasi.",
+        reply_markup=_control_keyboard(),
     )
 
 
@@ -691,7 +759,10 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     _user_state.pop(chat_id, None)
     global_agent_memory.clear()
-    await update.message.reply_text("Percakapan direset. Kirim /start untuk mulai lagi.")
+    await update.message.reply_text(
+        "Percakapan direset.\nKirim /start untuk mulai lagi.",
+        reply_markup=_main_menu_keyboard(),
+    )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -699,27 +770,31 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if chat_id != _OWNER_CHAT_ID:
         return
     await update.message.reply_text(
-        "NEXUS AI AGENT v" + _BOT_VERSION + " -- Panduan\n\n"
-        "Perintah Utama:\n"
-        "/start -- Menu utama\n"
-        "/stop -- Hentikan AI Roblox background\n"
-        "/continue -- Lanjutkan AI Roblox\n"
-        "/status -- Status lengkap agent\n\n"
-        "Self-Fix & GitHub:\n"
-        "/selffix [file] [deskripsi] -- AI perbaiki kode & push\n"
-        "  Contoh: /selffix nexus_main.py perbaiki loop\n\n"
-        "Maintenance:\n"
-        "/autofix -- Perbaiki semua file Lua bermasalah\n"
-        "/clear -- Reset percakapan\n\n"
-        "Catatan:\n"
+        "NEXUS AI AGENT v" + _BOT_VERSION + " — Panduan\n\n"
+        "TOMBOL KONTROL:\n"
+        "STOP ⛔ — Hentikan semua task AI segera\n"
+        "LANJUTKAN ▶ — Lanjutkan task yang dihentikan\n"
+        "STATUS ℹ — Lihat status lengkap\n\n"
+        "MODE:\n"
+        "AI Agent Roblox — Kirim laporan/perintah, AI kerjakan otonom\n"
+        "Chat Langsung AI — Bicara langsung, AI jawab dan kerjakan\n"
+        "Universal Agent — Minta kode apapun\n\n"
+        "PERINTAH:\n"
+        "/start — Menu utama\n"
+        "/stop — Hentikan AI\n"
+        "/continue — Lanjutkan AI\n"
+        "/status — Status detail\n"
+        "/selffix [file] [deskripsi] — AI perbaiki kode & push\n"
+        "/autofix — Perbaiki semua file Lua\n"
+        "/clear — Reset percakapan\n\n"
         "AI TIDAK PERNAH menolak perintahmu.\n"
-        "Jika gagal, AI retry otomatis sampai 15x.\n"
-        "Jika 10x gagal, AI akan tanya kamu."
+        "Jika gagal, AI retry otomatis sampai 15x.",
+        reply_markup=_control_keyboard(),
     )
 
 
 # ================================================
-# CALLBACK & MESSAGE HANDLERS
+# CALLBACK HANDLER — TOMBOL INLINE
 # ================================================
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -729,22 +804,73 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     data = query.data
-    if data == "mode_roblox":
-        _user_state[chat_id] = {"mode": "roblox", "step": "waiting_report"}
-        await query.edit_message_text(
-            "Mode AI Agent Otonom Full Roblox\n\n"
-            "Kirimkan laporan bug atau permintaan fitur game kamu.\n"
-            "Gunakan /stop kapanpun untuk menghentikan."
+
+    # --- Tombol kontrol Stop/Lanjutkan/Status ---
+    if data == "ctrl_stop":
+        await _do_stop(
+            lambda text, reply_markup=None: query.edit_message_text(
+                text, reply_markup=reply_markup or _control_keyboard(show_stop=False)
+            )
         )
+        return
+
+    if data == "ctrl_continue":
+        await _do_continue(
+            lambda text, reply_markup=None: query.edit_message_text(
+                text, reply_markup=reply_markup or _control_keyboard(show_stop=True)
+            )
+        )
+        return
+
+    if data == "ctrl_status":
+        await _send_status(
+            lambda text, reply_markup=None: query.edit_message_text(
+                text, reply_markup=reply_markup or _control_keyboard()
+            )
+        )
+        return
+
+    # --- Mode selection ---
+    if data == "mode_roblox":
+        _user_state[chat_id] = {"mode": "roblox", "step": "waiting_command"}
+        await query.edit_message_text(
+            "Mode AI Agent Otonom Roblox\n\n"
+            "Ketik laporan bug, permintaan fitur, atau perintah spesifik.\n\n"
+            "Contoh:\n"
+            "- Semua UI kotak dan bercahaya, perbaiki jadi mesh monster dari novel\n"
+            "- Buat sistem damage saat jatuh\n"
+            "- Tambah dinosaurus dan makhluk hidup di world\n\n"
+            "AI akan langsung mulai bekerja dan lapor progres ke sini.",
+            reply_markup=_control_keyboard(),
+        )
+
+    elif data == "mode_chat":
+        _user_state[chat_id] = {"mode": "chat", "step": "waiting_command"}
+        await query.edit_message_text(
+            "Mode Chat Langsung AI\n\n"
+            "Bicara langsung ke AI. AI akan menjawab DAN langsung mengerjakan perintahmu.\n\n"
+            "Contoh perintah:\n"
+            "- Jelaskan kenapa UI saya kotak semua\n"
+            "- Buat kode untuk sistem health bar\n"
+            "- Perbaiki file nexus_main.py\n"
+            "- Bagaimana cara membuat NPC dengan mesh khusus?\n\n"
+            "AI akan merespons SETIAP pesanmu tanpa ghosting.",
+            reply_markup=_control_keyboard(),
+        )
+
     elif data == "mode_universal":
         _user_state[chat_id] = {"mode": "universal", "step": "waiting_request"}
         await query.edit_message_text(
-            "Mode AI Agent Universal Code\n\n"
-            "Kirimkan request kode apapun:\n"
-            "Python, JavaScript, Lua, Rust, Go, dll."
+            "Mode AI Agent Universal\n\n"
+            "Minta kode apapun:\n"
+            "Python, JavaScript, Lua, Rust, Go, dll.",
+            reply_markup=_control_keyboard(),
         )
 
 
+# ================================================
+# MESSAGE HANDLER
+# ================================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
 
@@ -756,35 +882,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     text = (update.message.text or "").strip()
-    state = _user_state.get(chat_id, {})
-    mode = state.get("mode", "")
+    if not text:
+        return
 
+    # Cek apakah menunggu instruksi tambahan setelah task gagal
     if "waiting_for_owner_input" in _user_state:
         waiting = _user_state.pop("waiting_for_owner_input")
         task = waiting["task"]
         task["detail"] += "\n\nINSTRUKSI TAMBAHAN DARI OWNER: " + text
-        msg = await update.message.reply_text("Melanjutkan task dengan instruksi barumu...")
+        msg = await update.message.reply_text(
+            "Melanjutkan task dengan instruksi barumu...",
+            reply_markup=_control_keyboard(),
+        )
 
         async def send_fn(t):
-            await msg.edit_text(t)
+            await _safe_edit(msg, t)
 
         await execute_single_task_with_retry(task, send_fn)
         return
 
+    state = _user_state.get(chat_id, {})
+    mode = state.get("mode", "")
+
     if not mode:
-        await update.message.reply_text("Kirim /start untuk memilih mode terlebih dahulu.")
+        await update.message.reply_text(
+            "Kirim /start untuk memilih mode terlebih dahulu.",
+            reply_markup=_main_menu_keyboard(),
+        )
         return
 
     if mode == "roblox":
         await _handle_roblox_mode(update, context, chat_id, text)
+    elif mode == "chat":
+        await _handle_chat_mode(update, context, chat_id, text)
     elif mode == "universal":
         await _handle_universal_mode(update, context, chat_id, text)
 
 
+# ================================================
+# HANDLER MODE ROBLOX — PROGRESS REAL-TIME
+# ================================================
 async def _handle_roblox_mode(update, context, chat_id, text):
     global _roblox_background_task
 
-    msg = await update.message.reply_text("Analisis Laporan -- Membuat daftar task...")
+    msg = await update.message.reply_text(
+        "Perintah Diterima!\n\n"
+        "AI sedang menganalisis dan menyiapkan daftar task...\n"
+        "Progress akan dilaporkan langsung ke sini.",
+        reply_markup=_control_keyboard(),
+    )
 
     if _roblox_background_task and not _roblox_background_task.done():
         _roblox_background_task.cancel()
@@ -804,16 +950,120 @@ async def _handle_roblox_mode(update, context, chat_id, text):
                 bot_instance=context.bot,
                 chat_id=chat_id,
             )
+            # Kirim pesan selesai dengan tombol kontrol
+            await _safe_send(
+                context.bot,
+                chat_id,
+                "Semua Task Selesai!\n\n"
+                "AI telah menyelesaikan semua pekerjaan.\n"
+                "Kirim perintah baru atau gunakan /start.",
+                reply_markup=_control_keyboard(show_stop=False),
+            )
         except asyncio.CancelledError:
-            await msg.edit_text("Task dihentikan oleh /stop\n\nKirim /continue atau perintah baru.")
+            await _safe_edit(
+                msg,
+                "Task Dihentikan ⛔\n\n"
+                "Pekerjaan dihentikan oleh tombol STOP.\n"
+                "Tekan LANJUTKAN untuk melanjutkan.",
+                reply_markup=_control_keyboard(show_stop=False),
+            )
         except Exception as e:
-            await msg.edit_text("Error: " + str(e)[:200] + "\n\nCoba /autofix.")
+            err_short = str(e)[:300]
+            await _safe_edit(
+                msg,
+                "Error Terjadi!\n\n" + err_short + "\n\nCoba /autofix atau kirim ulang perintah.",
+                reply_markup=_control_keyboard(),
+            )
 
     _roblox_background_task = asyncio.create_task(run_fleet())
 
 
+# ================================================
+# HANDLER MODE CHAT LANGSUNG — TIDAK GHOSTING
+# ================================================
+async def _handle_chat_mode(update, context, chat_id, text):
+    """Mode chat langsung — AI selalu merespons dan bisa langsung mengerjakan tugas."""
+    msg = await update.message.reply_text(
+        "Memproses pesanmu...",
+        reply_markup=_control_keyboard(),
+    )
+
+    # Deteksi apakah ini perintah pekerjaan atau pertanyaan biasa
+    action_keywords = [
+        "buat", "buat ", "create", "tambah", "tambahkan", "perbaiki", "fix", "repair",
+        "tulis", "write", "generate", "hapus", "delete", "ubah", "ganti", "update",
+        "implementasi", "implement", "jalankan", "run", "push", "deploy",
+        "kerjakan", "lakukan", "execute",
+    ]
+    text_lower = text.lower()
+    is_action = any(kw in text_lower for kw in action_keywords)
+
+    system_prompt = (
+        "Kamu adalah Nexus AI Agent — asisten AI otonom yang ahli dalam game Roblox, "
+        "Python, dan pengembangan software.\n\n"
+        "Kamu sedang berbicara langsung dengan owner/developer.\n"
+        "Jawab dalam Bahasa Indonesia yang jelas dan ringkas.\n"
+        "Jika owner minta kamu buat/perbaiki kode, berikan kode lengkap yang siap dijalankan.\n"
+        "Jika owner bertanya, berikan penjelasan yang mudah dimengerti.\n"
+        "TIDAK PERNAH ghosting — selalu berikan respons yang bermakna.\n\n"
+        "KONTEKS SISTEM:\n"
+        "- Ini adalah sistem AI otonom untuk pengembangan game Roblox\n"
+        "- Ada pasukan AI agent (OmniSynthesizer, Scout, Healer, dll)\n"
+        "- Kamu adalah antarmuka utama yang menerima perintah owner\n\n"
+        "PESAN OWNER:\n" + text + "\n\n"
+        "RESPONS KAMU (dalam Bahasa Indonesia):"
+    )
+
+    response = await _call_gemini(system_prompt)
+
+    if not response or response.startswith("ERROR:"):
+        await _safe_edit(
+            msg,
+            "AI gagal merespons. Coba lagi atau gunakan /start untuk reset.",
+            reply_markup=_control_keyboard(),
+        )
+        return
+
+    # Potong respons jika terlalu panjang
+    if len(response) > 3800:
+        chunks = [response[i:i + 3800] for i in range(0, len(response), 3800)]
+        await _safe_edit(msg, "Respons AI (1/" + str(len(chunks)) + "):\n\n" + chunks[0])
+        for i, chunk in enumerate(chunks[1:], 2):
+            await _safe_send(
+                context.bot,
+                chat_id,
+                "(" + str(i) + "/" + str(len(chunks)) + "):\n\n" + chunk,
+                reply_markup=_control_keyboard() if i == len(chunks) else None,
+            )
+    else:
+        await _safe_edit(
+            msg,
+            response,
+            reply_markup=_control_keyboard(),
+        )
+
+    # Jika ini perintah aksi, tawarkan eksekusi langsung
+    if is_action:
+        await _safe_send(
+            context.bot,
+            chat_id,
+            "Apakah kamu mau AI langsung mengerjakan ini sebagai task Roblox otonom?\n\n"
+            "Tekan tombol di bawah atau kirim ulang dengan lebih detail.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Kerjakan Sekarang! 🚀", callback_data="mode_roblox")],
+                [InlineKeyboardButton("Tidak, cukup penjelasannya", callback_data="ctrl_status")],
+            ]),
+        )
+
+
+# ================================================
+# HANDLER MODE UNIVERSAL
+# ================================================
 async def _handle_universal_mode(update, context, chat_id, text):
-    msg = await update.message.reply_text("Memproses request...")
+    msg = await update.message.reply_text(
+        "Memproses request...",
+        reply_markup=_control_keyboard(),
+    )
 
     prompt = (
         "Kamu adalah senior developer expert semua bahasa pemrograman.\n"
@@ -826,20 +1076,37 @@ async def _handle_universal_mode(update, context, chat_id, text):
 
     if len(result) > 3800:
         chunks = [result[i:i + 3800] for i in range(0, len(result), 3800)]
-        await msg.edit_text("Hasil (bagian 1/" + str(len(chunks)) + "):\n\n" + chunks[0])
+        await _safe_edit(msg, "Hasil (1/" + str(len(chunks)) + "):\n\n" + chunks[0])
         for i, chunk in enumerate(chunks[1:], 2):
-            await update.message.reply_text("(bagian " + str(i) + "/" + str(len(chunks)) + "):\n\n" + chunk)
+            await _safe_send(
+                context.bot,
+                chat_id,
+                "(" + str(i) + "/" + str(len(chunks)) + "):\n\n" + chunk,
+                reply_markup=_control_keyboard() if i == len(chunks) else None,
+            )
     else:
-        await msg.edit_text(result)
+        await _safe_edit(msg, result, reply_markup=_control_keyboard())
 
 
 # ================================================
 # MAIN
 # ================================================
 async def post_init(application: Application) -> None:
+    global _bot_app
+    _bot_app = application
+
     async def send_fn(text):
-        await application.bot.send_message(chat_id=_OWNER_CHAT_ID, text=text)
+        await _safe_send(application.bot, _OWNER_CHAT_ID, text)
+
     await _startup_deep_scan(send_fn)
+
+    # Kirim menu utama setelah startup
+    await _safe_send(
+        application.bot,
+        _OWNER_CHAT_ID,
+        "Nexus AI siap! Pilih mode atau gunakan tombol kontrol:",
+        reply_markup=_main_menu_keyboard(),
+    )
 
 
 def run_telegram_bot():
@@ -861,7 +1128,9 @@ def run_telegram_bot():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    console_terminal_interface.print("[bold green]Nexus Telegram Bot v" + _BOT_VERSION + " berjalan...[/bold green]")
+    console_terminal_interface.print(
+        "[bold green]Nexus Telegram Bot v" + _BOT_VERSION + " berjalan...[/bold green]"
+    )
     app.run_polling(allowed_updates=["message", "callback_query"])
 
 
