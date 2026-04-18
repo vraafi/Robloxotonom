@@ -1893,21 +1893,13 @@ class OmniSynthesizerAgent:
             return False, result_data, previous_code
 
 
-# ============================================================
-# PATCH UNTUK nexus_agents.py
-# Tambahkan kode di bawah ini ke BAGIAN ATAS nexus_agents.py
-# (setelah semua import yang sudah ada)
-# ============================================================
-
 import threading as _threading
 
-# State pause dari telegram bot (di-set oleh nexus_telegram_bot.py)
-# Jika tidak ada, buat event sendiri (default: aktif/not paused)
-try:
-    from nexus_telegram_bot import _roblox_agent_paused
-except ImportError:
-    _roblox_agent_paused = _threading.Event()
-    _roblox_agent_paused.set()
+# Pause event yang di-set oleh nexus_telegram_bot.py via import.
+# Didefinisikan di sini (nexus_agents) sebagai sumber kebenaran tunggal,
+# agar tidak terjadi circular import dan kedua modul memakai OBJEK YANG SAMA.
+_roblox_agent_paused = _threading.Event()
+_roblox_agent_paused.set()  # Default: aktif (not paused)
 
 
 class NexusGlobalState:
@@ -1998,11 +1990,6 @@ async def execute_with_persistent_retry(
     )
     return None  # Ditangani oleh message handler di telegram bot
 
-
-# ============================================================
-# Juga tambahkan baris ini di BAGIAN BAWAH nexus_agents.py
-# (setelah semua class dan fungsi yang sudah ada)
-# ============================================================
 
 async def execute_antigravity_fleet(
     user_report: str,
