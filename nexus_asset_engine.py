@@ -7,7 +7,8 @@ TIDAK mengubah logika Gemini CLI, agent orchestrator, atau pipeline yang sudah a
 Komponen:
   - detect_asset_type       : Mendeteksi tipe aset dari nama task
   - AssetDirectoryManager   : Menentukan folder tujuan yang benar (struktur Rojo)
-  - RbxmxGenerator          : Membuat file .rbxmx (XML Roblox) untuk Part/Model/GUI
+  - SmartUIAssetSelector    : Pemilih aset UI cerdas (MeshPart/SpecialMesh) dengan fallback aura
+  - RbxmxGenerator          : Membuat file .rbxmx (XML Roblox) untuk Part/Model/GUI/MeshPart
   - AssetTestValidator      : Validasi struktural XML tanpa perlu Studio
   - ReModelRunner           : Menjalankan remodel secara headless (tes DataModel)
   - OpenCloudAssetUploader  : Upload mesh/aset ke Roblox via Open Cloud API
@@ -68,21 +69,172 @@ _WORLD_KEYWORDS = [
     "CHECKPOINT", "LANDMARK", "BASEPLATE", "AMBIENT", "FOG",
     "LIGHTING", "ATMOSPHERE", "SKYBOX",
 ]
+_MESH_PART_KEYWORDS = [
+    "MESHPART", "MESH_PART", "SPECIALMESH", "SPECIAL_MESH",
+    "CREATURE", "MONSTER", "NPC_MESH", "ORGANIC_MESH",
+]
+
+# ============================================================
+# KATALOG ASET MESHPART / SPECIALMESH BAWAAN
+# (Aset publik Roblox yang bebas dipakai; tambahkan rbxassetid
+#  milik Anda sendiri di sini untuk performa terbaik)
+# ============================================================
+MESH_ASSET_CATALOG: list[dict] = [
+    {
+        "id": "rbxassetid://0",
+        "tags": ["sphere", "ball", "round", "bulat", "bola", "oval"],
+        "description": "Bola / Sphere — bentuk dasar organik bulat",
+        "mesh_type": "Sphere",
+        "is_special_mesh": True,
+    },
+    {
+        "id": "rbxassetid://0",
+        "tags": ["cylinder", "tube", "tabung", "silinder", "pipa", "tiang"],
+        "description": "Silinder — cocok untuk tiang, pipa, atau batang",
+        "mesh_type": "Cylinder",
+        "is_special_mesh": True,
+    },
+    {
+        "id": "rbxassetid://0",
+        "tags": ["wedge", "baji", "miring", "lereng", "slope", "ramp"],
+        "description": "Baji / Wedge — bentuk segitiga miring",
+        "mesh_type": "Wedge",
+        "is_special_mesh": True,
+    },
+    {
+        "id": "rbxassetid://0",
+        "tags": ["cornerwedge", "sudut", "corner", "pojok"],
+        "description": "Corner Wedge — sudut yang terpotong diagonal",
+        "mesh_type": "CornerWedge",
+        "is_special_mesh": True,
+    },
+    {
+        "id": "rbxassetid://1290033",
+        "tags": ["diamond", "berlian", "permata", "gem", "crystal", "kristal"],
+        "description": "Diamond / Berlian — bentuk permata",
+        "mesh_type": "FileMesh",
+        "is_special_mesh": True,
+    },
+    {
+        "id": "rbxassetid://9856898",
+        "tags": ["ring", "cincin", "lingkaran", "torus", "loop"],
+        "description": "Ring / Cincin — torus / cincin",
+        "mesh_type": "FileMesh",
+        "is_special_mesh": True,
+    },
+    {
+        "id": "rbxassetid://72013856",
+        "tags": ["star", "bintang", "star_shape"],
+        "description": "Bintang — shape bintang dekoratif",
+        "mesh_type": "FileMesh",
+        "is_special_mesh": True,
+    },
+    {
+        "id": "rbxassetid://431221914",
+        "tags": ["rock", "batu", "stone", "boulder", "batuan"],
+        "description": "Batu / Rock — batu alam organik",
+        "mesh_type": "FileMesh",
+        "is_special_mesh": True,
+    },
+    {
+        "id": "rbxassetid://1290033",
+        "tags": ["gem", "amethyst", "emerald", "ruby", "sapphire"],
+        "description": "Kristal Gem — permata bersegi",
+        "mesh_type": "FileMesh",
+        "is_special_mesh": True,
+    },
+    {
+        "id": "rbxassetid://0",
+        "tags": ["torso", "body", "badan", "tubuh", "humanoid", "karakter"],
+        "description": "Torso humanoid — badan karakter",
+        "mesh_type": "Brick",
+        "is_special_mesh": True,
+    },
+]
+
+# ============================================================
+# KATALOG AURA FALLBACK
+# Digunakan HANYA jika tidak ada MeshPart/SpecialMesh yang cocok.
+# PERINGATAN KERAS: Aura hanya boleh dipakai sebagai PEMBEDA visual
+# terakhir — bukan sebagai pengganti bentuk mesh yang sesungguhnya.
+# ============================================================
+AURA_CATALOG: list[dict] = [
+    {
+        "name": "AuraHitam",
+        "color": "Color3.fromRGB(0, 0, 0)",
+        "particle_color": "ColorSequence.new(Color3.fromRGB(20, 0, 30), Color3.fromRGB(0, 0, 0))",
+        "description": "Aura gelap/hitam — kekuatan jahat atau shadow element",
+        "tags": ["dark", "shadow", "evil", "gelap", "hitam", "iblis", "black"],
+    },
+    {
+        "name": "AuraMerah",
+        "color": "Color3.fromRGB(180, 0, 0)",
+        "particle_color": "ColorSequence.new(Color3.fromRGB(255, 50, 0), Color3.fromRGB(180, 0, 0))",
+        "description": "Aura merah — kekuatan api atau agresi tinggi",
+        "tags": ["fire", "rage", "merah", "red", "api", "marah", "berapi", "panas"],
+    },
+    {
+        "name": "AuraBiru",
+        "color": "Color3.fromRGB(0, 80, 200)",
+        "particle_color": "ColorSequence.new(Color3.fromRGB(100, 180, 255), Color3.fromRGB(0, 80, 200))",
+        "description": "Aura biru — elemen air atau es, atau kekuatan magis",
+        "tags": ["water", "ice", "magic", "biru", "blue", "es", "air", "sihir"],
+    },
+    {
+        "name": "AuraHijau",
+        "color": "Color3.fromRGB(0, 180, 50)",
+        "particle_color": "ColorSequence.new(Color3.fromRGB(100, 255, 100), Color3.fromRGB(0, 180, 50))",
+        "description": "Aura hijau — racun, alam, atau healing",
+        "tags": ["poison", "nature", "heal", "hijau", "green", "racun", "alam", "sembuh"],
+    },
+    {
+        "name": "AuraUngu",
+        "color": "Color3.fromRGB(120, 0, 180)",
+        "particle_color": "ColorSequence.new(Color3.fromRGB(200, 100, 255), Color3.fromRGB(120, 0, 180))",
+        "description": "Aura ungu — energi mistis atau chaos",
+        "tags": ["chaos", "mystic", "ungu", "purple", "mistis", "kekacauan"],
+    },
+    {
+        "name": "AuraEmas",
+        "color": "Color3.fromRGB(255, 200, 0)",
+        "particle_color": "ColorSequence.new(Color3.fromRGB(255, 240, 100), Color3.fromRGB(255, 180, 0))",
+        "description": "Aura emas — kekuatan legendaris atau divine",
+        "tags": ["gold", "divine", "legend", "emas", "dewa", "suci", "holy"],
+    },
+    {
+        "name": "AuraPutih",
+        "color": "Color3.fromRGB(220, 220, 255)",
+        "particle_color": "ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(200, 200, 255))",
+        "description": "Aura putih — kesucian atau kekuatan cahaya",
+        "tags": ["light", "pure", "putih", "white", "suci", "cahaya", "angel"],
+    },
+    {
+        "name": "AuraPelangi",
+        "color": "Color3.fromRGB(255, 100, 200)",
+        "particle_color": "ColorSequence.new(Color3.fromRGB(255, 0, 100), Color3.fromRGB(100, 200, 255))",
+        "description": "Aura pelangi — kekuatan tidak terdefinisi atau omni-element",
+        "tags": ["rainbow", "prism", "omni", "pelangi", "prisma", "semua elemen"],
+    },
+]
 
 
 def detect_asset_type(task_name: str) -> str:
     """
     Mengembalikan tipe aset berdasarkan nama task:
-      'GUI'   → ScreenGui / UI element (disimpan ke StarterGui)
-      'MODEL' → Model 3D rbxmx (disimpan ke Workspace)
-      'MESH'  → Upload mesh ke Open Cloud API
-      'WORLD' → Script/Part dunia (disimpan ke Workspace)
-      'LUAU'  → Script biasa — TIDAK ditangani modul ini
+      'GUI'       → ScreenGui / UI element (disimpan ke StarterGui)
+      'MESH_PART' → MeshPart/SpecialMesh rbxmx (disimpan ke Workspace)
+      'MODEL'     → Model 3D rbxmx (disimpan ke Workspace)
+      'MESH'      → Upload mesh ke Open Cloud API
+      'WORLD'     → Script/Part dunia (disimpan ke Workspace)
+      'LUAU'      → Script biasa — TIDAK ditangani modul ini
     """
     upper = task_name.upper()
     for kw in _GUI_KEYWORDS:
         if kw in upper:
             return "GUI"
+    for kw in _MESH_PART_KEYWORDS:
+        if kw in upper:
+            return "MESH_PART"
     for kw in _MESH_KEYWORDS:
         if kw in upper:
             return "MESH"
@@ -96,6 +248,243 @@ def detect_asset_type(task_name: str) -> str:
 
 
 # ============================================================
+# SMART UI ASSET SELECTOR — Pemilih MeshPart/SpecialMesh Cerdas
+# ============================================================
+class SmartUIAssetSelector:
+    """
+    Memilih aset MeshPart atau SpecialMesh yang paling cocok dari katalog
+    berdasarkan konteks task_name menggunakan pencocokan tag berbasis kata kunci.
+
+    PRIORITAS PEMILIHAN (urutan ketat):
+      1. Cocokkan kata kunci task_name dengan 'tags' di MESH_ASSET_CATALOG.
+         Pilih entri dengan jumlah tag yang paling banyak cocok.
+      2. Jika TIDAK ada yang cocok sama sekali → gunakan fallback aura dari
+         AURA_CATALOG. Fallback ini hanya boleh digunakan sebagai PEMBEDA visual
+         terakhir.
+
+    PERINGATAN KERAS:
+      Aura hanya boleh digunakan ketika BENAR-BENAR tidak ada MeshPart atau
+      SpecialMesh yang cocok. Penggunaan aura harus disertai log peringatan
+      yang jelas. Aura BUKAN pengganti mesh — aura hanya menambahkan efek
+      visual pembeda pada Part biasa agar tetap dapat dibedakan antar objek.
+    """
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        """Pecah teks menjadi token kata kunci huruf kecil."""
+        return re.sub(r"[_\-\s]+", " ", text.lower()).split()
+
+    @classmethod
+    def select_mesh_asset(cls, task_name: str) -> Optional[dict]:
+        """
+        Mencari aset MeshPart/SpecialMesh yang paling sesuai dari MESH_ASSET_CATALOG.
+        Mengembalikan dict aset atau None jika tidak ada yang cocok.
+        """
+        tokens = cls._tokenize(task_name)
+        best_match: Optional[dict] = None
+        best_score = 0
+
+        for asset in MESH_ASSET_CATALOG:
+            score = sum(1 for tag in asset["tags"] if tag in tokens)
+            if score > best_score:
+                best_score = score
+                best_match = asset
+
+        if best_score > 0 and best_match is not None:
+            console_terminal_interface.print(
+                f"  [bold green][SmartSelector] ✅ Mesh cocok ditemukan: "
+                f"'{best_match['description']}' (skor={best_score})[/bold green]"
+            )
+            return best_match
+
+        return None
+
+    @classmethod
+    def select_aura_fallback(cls, task_name: str) -> dict:
+        """
+        ⚠️ FALLBACK TERAKHIR — hanya dipanggil jika select_mesh_asset() gagal.
+        Memilih aura yang paling sesuai dari AURA_CATALOG.
+        Mengembalikan aura default (hitam) jika tidak ada yang cocok.
+        """
+        tokens = cls._tokenize(task_name)
+        best_aura: Optional[dict] = None
+        best_score = 0
+
+        for aura in AURA_CATALOG:
+            score = sum(1 for tag in aura["tags"] if tag in tokens)
+            if score > best_score:
+                best_score = score
+                best_aura = aura
+
+        chosen = best_aura if best_aura is not None else AURA_CATALOG[0]
+
+        console_terminal_interface.print(
+            f"  [bold red][SmartSelector] ⚠️ PERINGATAN KERAS: Tidak ada MeshPart/"
+            f"SpecialMesh yang cocok untuk '{task_name}'.[/bold red]"
+        )
+        console_terminal_interface.print(
+            f"  [bold red][SmartSelector] ⚠️ MENGGUNAKAN AURA FALLBACK: "
+            f"'{chosen['name']}' sebagai PEMBEDA VISUAL SAJA.[/bold red]"
+        )
+        console_terminal_interface.print(
+            f"  [bold yellow][SmartSelector] TINDAKAN YANG DISARANKAN: Tambahkan "
+            f"rbxassetid yang sesuai ke MESH_ASSET_CATALOG di nexus_asset_engine.py "
+            f"agar aura tidak digunakan lagi untuk task serupa.[/bold yellow]"
+        )
+
+        return chosen
+
+    @classmethod
+    def generate_mesh_part_luau(
+        cls,
+        task_name: str,
+        mesh_asset: dict,
+        parent_expr: str = "workspace",
+    ) -> str:
+        """
+        Menghasilkan kode Luau untuk membuat MeshPart atau SpecialMesh
+        berdasarkan aset yang dipilih dari katalog.
+        """
+        safe_name = re.sub(r"[^\w]", "_", task_name)
+        mesh_type = mesh_asset.get("mesh_type", "Sphere")
+        asset_id = mesh_asset.get("id", "rbxassetid://0")
+
+        if mesh_asset.get("is_special_mesh"):
+            if mesh_type in ("Sphere", "Cylinder", "Wedge", "CornerWedge", "Brick"):
+                return (
+                    f"--!strict\n"
+                    f"-- SmartUIAssetSelector: SpecialMesh [{mesh_type}] untuk {safe_name}\n"
+                    f"local part = Instance.new('Part')\n"
+                    f"part.Name = '{safe_name}'\n"
+                    f"part.Size = Vector3.new(4, 4, 4)\n"
+                    f"part.Anchored = true\n"
+                    f"part.CanCollide = true\n"
+                    f"part.Material = Enum.Material.SmoothPlastic\n"
+                    f"part.CastShadow = true\n"
+                    f"local mesh = Instance.new('SpecialMesh')\n"
+                    f"mesh.MeshType = Enum.MeshType.{mesh_type}\n"
+                    f"mesh.Scale = Vector3.new(1, 1, 1)\n"
+                    f"mesh.Parent = part\n"
+                    f"part.Parent = {parent_expr}\n"
+                )
+            else:
+                return (
+                    f"--!strict\n"
+                    f"-- SmartUIAssetSelector: SpecialMesh [FileMesh] untuk {safe_name}\n"
+                    f"local part = Instance.new('Part')\n"
+                    f"part.Name = '{safe_name}'\n"
+                    f"part.Size = Vector3.new(4, 4, 4)\n"
+                    f"part.Anchored = true\n"
+                    f"part.CanCollide = true\n"
+                    f"part.Material = Enum.Material.SmoothPlastic\n"
+                    f"local mesh = Instance.new('SpecialMesh')\n"
+                    f"mesh.MeshType = Enum.MeshType.FileMesh\n"
+                    f"mesh.MeshId = '{asset_id}'\n"
+                    f"mesh.Scale = Vector3.new(1, 1, 1)\n"
+                    f"mesh.Parent = part\n"
+                    f"part.Parent = {parent_expr}\n"
+                )
+        else:
+            return (
+                f"--!strict\n"
+                f"-- SmartUIAssetSelector: MeshPart untuk {safe_name}\n"
+                f"local meshPart = Instance.new('MeshPart')\n"
+                f"meshPart.Name = '{safe_name}'\n"
+                f"meshPart.MeshId = '{asset_id}'\n"
+                f"meshPart.Size = Vector3.new(4, 4, 4)\n"
+                f"meshPart.Anchored = true\n"
+                f"meshPart.CanCollide = true\n"
+                f"meshPart.Material = Enum.Material.SmoothPlastic\n"
+                f"meshPart.CastShadow = true\n"
+                f"meshPart.Parent = {parent_expr}\n"
+            )
+
+    @classmethod
+    def generate_aura_luau(
+        cls,
+        task_name: str,
+        aura: dict,
+        parent_expr: str = "workspace",
+    ) -> str:
+        """
+        ⚠️ FALLBACK TERAKHIR — Menghasilkan kode Luau untuk Part biasa dengan
+        aura ParticleEmitter sebagai pembeda visual.
+
+        PERINGATAN KERAS: Kode ini HANYA boleh dijalankan jika tidak ada
+        MeshPart/SpecialMesh yang cocok di MESH_ASSET_CATALOG. Aura bukan
+        pengganti mesh — tambahkan aset mesh yang benar ke katalog sesegera
+        mungkin untuk menghindari penggunaan aura fallback ini.
+        """
+        safe_name = re.sub(r"[^\w]", "_", task_name)
+        aura_name = aura.get("name", "AuraHitam")
+        color = aura.get("color", "Color3.fromRGB(0, 0, 0)")
+        particle_color = aura.get("particle_color", "ColorSequence.new(Color3.fromRGB(0,0,0), Color3.fromRGB(0,0,0))")
+        description = aura.get("description", "Aura fallback")
+
+        return (
+            f"--!strict\n"
+            f"-- ⚠️ PERINGATAN KERAS: Ini adalah AURA FALLBACK karena tidak ada\n"
+            f"-- MeshPart/SpecialMesh yang cocok untuk: {safe_name}\n"
+            f"-- Aura: {aura_name} — {description}\n"
+            f"-- TINDAKAN WAJIB: Tambahkan rbxassetid yang sesuai ke\n"
+            f"-- MESH_ASSET_CATALOG di nexus_asset_engine.py agar mesh sesungguhnya\n"
+            f"-- digunakan di masa mendatang, bukan aura placeholder ini.\n"
+            f"local part = Instance.new('Part')\n"
+            f"part.Name = '{safe_name}'\n"
+            f"part.Size = Vector3.new(4, 4, 4)\n"
+            f"part.Anchored = true\n"
+            f"part.CanCollide = true\n"
+            f"part.BrickColor = BrickColor.new('Medium stone grey')\n"
+            f"part.Material = Enum.Material.SmoothPlastic\n"
+            f"part.CastShadow = true\n"
+            f"-- Aura: SelectionBox sebagai highlight pembeda\n"
+            f"local selBox = Instance.new('SelectionBox')\n"
+            f"selBox.Adornee = part\n"
+            f"selBox.Color3 = {color}\n"
+            f"selBox.LineThickness = 0.05\n"
+            f"selBox.SurfaceTransparency = 0.7\n"
+            f"selBox.SurfaceColor3 = {color}\n"
+            f"selBox.Parent = part\n"
+            f"-- ParticleEmitter aura\n"
+            f"local particle = Instance.new('ParticleEmitter')\n"
+            f"particle.Color = {particle_color}\n"
+            f"particle.LightEmission = 0.8\n"
+            f"particle.LightInfluence = 0.2\n"
+            f"particle.Size = NumberSequence.new({{NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 0)}})\n"
+            f"particle.Transparency = NumberSequence.new({{NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 1)}})\n"
+            f"particle.Speed = NumberRange.new(1, 3)\n"
+            f"particle.Rate = 20\n"
+            f"particle.Lifetime = NumberRange.new(1, 2)\n"
+            f"particle.SpreadAngle = Vector2.new(180, 180)\n"
+            f"particle.Parent = part\n"
+            f"part.Parent = {parent_expr}\n"
+        )
+
+    @classmethod
+    def resolve_and_generate(
+        cls,
+        task_name: str,
+        parent_expr: str = "workspace",
+    ) -> tuple[str, str, bool]:
+        """
+        Titik masuk utama SmartUIAssetSelector.
+        Mengembalikan: (luau_code, log_message, is_aura_fallback)
+
+        Alur keputusan:
+          1. Coba cocokkan MeshPart/SpecialMesh dari katalog.
+          2. Jika tidak cocok → gunakan aura fallback dengan peringatan keras.
+        """
+        mesh_asset = cls.select_mesh_asset(task_name)
+        if mesh_asset is not None:
+            luau = cls.generate_mesh_part_luau(task_name, mesh_asset, parent_expr)
+            return luau, f"MeshPart/SpecialMesh terpilih: {mesh_asset['description']}", False
+        else:
+            aura = cls.select_aura_fallback(task_name)
+            luau = cls.generate_aura_luau(task_name, aura, parent_expr)
+            return luau, f"AURA FALLBACK digunakan: {aura['name']} — {aura['description']}", True
+
+
+# ============================================================
 # ASSET DIRECTORY MANAGER
 # ============================================================
 class AssetDirectoryManager:
@@ -106,7 +495,7 @@ class AssetDirectoryManager:
         safe_name = re.sub(r"[^\w]", "_", task_name)
         if asset_type == "GUI":
             return os.path.join(_GUI_DIR, f"{safe_name}.rbxmx")
-        elif asset_type in ("MODEL", "WORLD"):
+        elif asset_type in ("MODEL", "WORLD", "MESH_PART"):
             return os.path.join(_ASSETS_DIR, f"{safe_name}.rbxmx")
         elif asset_type == "MESH":
             return os.path.join(_MESH_OBJ_DIR, f"{safe_name}.obj")
@@ -185,10 +574,34 @@ class RbxmxGenerator:
         '</roblox>\n'
     )
 
+    # Template MESH_PART: membungkus kode Luau yang sudah dihasilkan
+    # SmartUIAssetSelector (bisa berupa MeshPart, SpecialMesh, atau aura fallback)
+    # ke dalam Model rbxmx dengan Script server.
+    _MESH_PART_TMPL = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime"'
+        ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+        ' xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">\n'
+        '  <Item class="Model" referent="RBXMP0">\n'
+        '    <Properties>\n'
+        '      <string name="Name">{name}</string>\n'
+        '    </Properties>\n'
+        '    <Item class="Script" referent="RBXMP1">\n'
+        '      <Properties>\n'
+        '        <string name="Name">{name}_MeshSpawner</string>\n'
+        '        <bool name="Disabled">false</bool>\n'
+        '        <ProtectedString name="Source"><![CDATA[{code}]]></ProtectedString>\n'
+        '      </Properties>\n'
+        '    </Item>\n'
+        '  </Item>\n'
+        '</roblox>\n'
+    )
+
     @classmethod
     def generate(cls, task_name: str, asset_type: str, luau_code: str) -> Tuple[bool, str, str]:
         """
         Membungkus kode Luau ke dalam template rbxmx yang sesuai.
+        Untuk MESH_PART: luau_code berisi kode yang sudah dihasilkan SmartUIAssetSelector.
         Returns: (success, rbxmx_content, error_message)
         """
         safe_name = re.sub(r"[^\w]", "_", task_name)
@@ -199,6 +612,8 @@ class RbxmxGenerator:
                 content = cls._MODEL_TMPL.format(name=safe_name, code=luau_code)
             elif asset_type == "WORLD":
                 content = cls._WORLD_TMPL.format(name=safe_name, code=luau_code)
+            elif asset_type == "MESH_PART":
+                content = cls._MESH_PART_TMPL.format(name=safe_name, code=luau_code)
             else:
                 return False, "", f"Tipe '{asset_type}' tidak didukung RbxmxGenerator."
             return True, content, ""
@@ -227,10 +642,11 @@ class AssetTestValidator:
     """
 
     _REQUIRED_CLASSES = {
-        "GUI":   {"ScreenGui", "LocalScript"},
-        "MODEL": {"Model", "Script"},
-        "WORLD": {"Script"},
-        "MESH":  set(),
+        "GUI":       {"ScreenGui", "LocalScript"},
+        "MODEL":     {"Model", "Script"},
+        "WORLD":     {"Script"},
+        "MESH":      set(),
+        "MESH_PART": {"Model", "Script"},
     }
 
     @classmethod
@@ -312,7 +728,7 @@ class ReModelRunner:
                 f'remodel.writePlaceFile(place, "{compiled}")\n'
                 f'print("OK: GUI {safe_name} masuk ke StarterGui.")\n'
             )
-        elif asset_type in ("MODEL", "WORLD"):
+        elif asset_type in ("MODEL", "WORLD", "MESH_PART"):
             return (
                 f'if not remodel.isFile("{compiled}") then\n'
                 f'  print("SKIP: build.rbxl belum ada.")\n'
@@ -436,7 +852,8 @@ class OpenCloudAssetUploader:
 class AssetOrchestrator:
     """
     Dipanggil oleh OmniSynthesizerAgent setelah Luau code lulus semua validasi.
-    Pipeline: detect type → generate rbxmx → validasi XML → tes remodel → upload (khusus MESH).
+    Pipeline: detect type → (SmartUIAssetSelector jika MESH_PART) → generate rbxmx
+              → validasi XML → tes remodel → upload (khusus MESH).
     """
 
     @classmethod
@@ -448,6 +865,10 @@ class AssetOrchestrator:
         """
         Returns: (success, saved_file_path, error_message)
         Jika task bukan aset (LUAU), returns (False, "", "BUKAN_ASET").
+
+        Untuk MESH_PART: SmartUIAssetSelector menentukan MeshPart/SpecialMesh terbaik
+        dari MESH_ASSET_CATALOG. Jika tidak ada yang cocok, aura fallback digunakan
+        dengan PERINGATAN KERAS di log.
         """
         asset_type = detect_asset_type(task_name)
         if asset_type == "LUAU":
@@ -463,6 +884,10 @@ class AssetOrchestrator:
         # ── MESH: jalur khusus (OBJ + upload) ──────────────────────────────
         if asset_type == "MESH":
             return await cls._handle_mesh(task_name, luau_code, target_path)
+
+        # ── MESH_PART: gunakan SmartUIAssetSelector ──────────────────────────
+        if asset_type == "MESH_PART":
+            return await cls._handle_mesh_part(task_name, target_path)
 
         # ── STEP 1: Generate rbxmx ──────────────────────────────────────────
         gen_ok, rbxmx_content, gen_err = RbxmxGenerator.generate(task_name, asset_type, luau_code)
@@ -495,6 +920,72 @@ class AssetOrchestrator:
             console_terminal_interface.print(f"  [Asset Engine] {remodel_msg[:120]}")
         else:
             # Warning saja — file XML sudah valid, remodel hanya tes tambahan
+            console_terminal_interface.print(
+                f"  [Asset Engine] [bold yellow]⚠️ Remodel: {remodel_msg[:120]}[/bold yellow]"
+            )
+
+        return True, target_path, ""
+
+    # ── Internal: Handle MESH_PART task via SmartUIAssetSelector ───────────
+    @classmethod
+    async def _handle_mesh_part(cls, task_name: str, target_path: str) -> Tuple[bool, str, str]:
+        """
+        Menangani task bertipe MESH_PART menggunakan SmartUIAssetSelector.
+
+        Alur:
+          1. SmartUIAssetSelector.resolve_and_generate() memilih MeshPart/SpecialMesh terbaik.
+          2. Jika tidak ada yang cocok → aura fallback dipilih dengan PERINGATAN KERAS.
+          3. Kode Luau yang dihasilkan dibungkus dalam template MESH_PART rbxmx.
+          4. Validasi XML + tes remodel headless.
+        """
+        luau_code, selector_log, is_aura_fallback = SmartUIAssetSelector.resolve_and_generate(task_name)
+
+        if is_aura_fallback:
+            console_terminal_interface.print(
+                f"  [bold red][Asset Engine] ⚠️⚠️⚠️ PERINGATAN KERAS ⚠️⚠️⚠️[/bold red]"
+            )
+            console_terminal_interface.print(
+                f"  [bold red][Asset Engine] AURA FALLBACK aktif untuk '{task_name}'.[/bold red]"
+            )
+            console_terminal_interface.print(
+                f"  [bold red][Asset Engine] Ini terjadi karena tidak ada MeshPart/"
+                f"SpecialMesh yang cocok di MESH_ASSET_CATALOG.[/bold red]"
+            )
+            console_terminal_interface.print(
+                f"  [bold yellow][Asset Engine] AKSI YANG DIPERLUKAN: Tambahkan "
+                f"rbxassetid yang relevan ke MESH_ASSET_CATALOG di nexus_asset_engine.py.[/bold yellow]"
+            )
+        else:
+            console_terminal_interface.print(
+                f"  [bold green][Asset Engine] ✅ {selector_log}[/bold green]"
+            )
+
+        gen_ok, rbxmx_content, gen_err = RbxmxGenerator.generate(task_name, "MESH_PART", luau_code)
+        if not gen_ok:
+            return False, "", f"[RbxmxGenerator MESH_PART] {gen_err}"
+
+        write_ok, write_err = RbxmxGenerator.write(target_path, rbxmx_content)
+        if not write_ok:
+            return False, "", f"[WriteFile MESH_PART] {write_err}"
+
+        console_terminal_interface.print(
+            f"  [Asset Engine] 💾 Tersimpan → [dim]{target_path}[/dim]"
+        )
+
+        val_ok, val_msg = AssetTestValidator.validate_rbxmx(target_path, "MESH_PART")
+        if not val_ok:
+            try:
+                os.remove(target_path)
+            except OSError:
+                pass
+            return False, "", f"[XMLValidasi MESH_PART] {val_msg}"
+
+        console_terminal_interface.print(f"  [Asset Engine] {val_msg}")
+
+        remodel_ok, remodel_msg = await ReModelRunner.run_test(task_name, "MESH_PART", target_path)
+        if remodel_ok:
+            console_terminal_interface.print(f"  [Asset Engine] {remodel_msg[:120]}")
+        else:
             console_terminal_interface.print(
                 f"  [Asset Engine] [bold yellow]⚠️ Remodel: {remodel_msg[:120]}[/bold yellow]"
             )
@@ -554,3 +1045,4 @@ class AssetOrchestrator:
             "f 1//5 3//5 7//5 5//5\n"
             "f 2//6 6//6 8//6 4//6\n"
         )
+
