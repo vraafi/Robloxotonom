@@ -588,11 +588,11 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
 # =====================================================================
 # [KEMAMPUAN BARU]: SAKELAR OVERRIDE PRIORITAS TELEGRAM (MUTEX LOCK)
 # =====================================================================
-class NexusGlobalState:
-    # Jika True, SEMUA agen otonom latar belakang WAJIB BERHENTI/TIDUR sementara.
-    TELEGRAM_OVERRIDE_ACTIVE = False
-    # Flag untuk melacak apakah bot sedang shutdown (graceful stop)
-    BOT_SHUTTING_DOWN = False
+# (Definisi NexusGlobalState dipindahkan ke bawah dengan atribut lengkap)
+
+
+
+
 
 class AgentMemory:
     """Menyimpan riwayat percakapan untuk konteks multi-turn."""
@@ -770,22 +770,8 @@ async def execute_antigravity_simple(prompt: str, model: str, max_retries: int =
     return ""
 
 
-async def execute_antigravity_fleet(complex_prompt: str, model: str) -> str:
-    if NexusGlobalState.BOT_SHUTTING_DOWN:
-        return "Bot sedang dalam proses shutdown. Silakan coba lagi setelah bot diaktifkan kembali."
-    global_agent_memory.add_user_message(complex_prompt)
-    tasks = await decompose_complex_prompt(complex_prompt, model)
-    combined_results = []
-
-    for i, task in enumerate(tasks, 1):
-        contextual_task = f"Tugas {i}/{len(tasks)}: {task}."
-        result = await execute_antigravity_simple(contextual_task, model)
-        if result: combined_results.append(f"--- HASIL TUGAS {i} ---\n{result}\n")
-        else: combined_results.append(f"--- TUGAS {i} GAGAL ---\n")
-
-    final_output = "\n".join(combined_results)
-    global_agent_memory.add_ai_message(final_output)
-    return final_output
+# execute_antigravity_fleet VERSI BARU ada di bawah (~L2017).
+# Versi lama (dengan signature berbeda) dihapus untuk menghindari konflik.
 
 # =====================================================================
 # KELAS ASLI OmniSynthesizerAgent, AutoHealerAgent BERADA DI BAWAH INI
@@ -1930,10 +1916,14 @@ class NexusGlobalState:
     current_task: str = ""
     total_tasks_done: int = 0
     total_tasks_failed: int = 0
+    # Sakelar override: True = semua agen otonom berhenti/tidur sementara
+    TELEGRAM_OVERRIDE_ACTIVE: bool = False
+    # Flag graceful shutdown
+    BOT_SHUTTING_DOWN: bool = False
 
 
 # Memory global antar sesi
-global_agent_memory: dict = {}
+# global_agent_memory remaped ke bawah — gunakan instance AgentMemory() dari atas (L626)
 
 
 async def execute_with_persistent_retry(
