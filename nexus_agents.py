@@ -1380,6 +1380,129 @@ TASK_SPECIFIC_INSTRUCTIONS: dict = {
         "6. Cegah self-purchase: if listing.SellerId == buyer.UserId then reject.\n"
         "7. OrderedDataStore untuk sort listing by harga.\n"
     ),
+      "GUI_HUD": (
+          "[KATEGORI: GUI / HUD / ANTARMUKA PENGGUNA ROBLOX]\n"
+          "Anda sedang membuat UI Roblox (ScreenGui + LocalScript).\n"
+          "HUKUM MUTLAK PEMBUATAN UI (WAJIB DIPATUHI 100%):\n"
+          "1. WAJIB BUAT SEMUA ELEMEN UI VIA KODE LUAU MURNI menggunakan Instance.new().\n"
+          "   DILARANG KERAS menggunakan rbxassetid://, rbxthumb://, Content URL, atau ID aset apapun dari GitHub/internet.\n"
+          "   Semua visual (warna, bentuk, teks, ikon) WAJIB dibuat via properti Roblox: BackgroundColor3, TextColor3, UICorner, UIStroke, dll.\n"
+          "2. STRUKTUR WAJIB:\n"
+          "   local Players = game:GetService('Players')\n"
+          "   local player = Players.LocalPlayer\n"
+          "   local playerGui = player:WaitForChild('PlayerGui')\n"
+          "   local screenGui = Instance.new('ScreenGui')\n"
+          "   screenGui.Name = 'NamaUI'\n"
+          "   screenGui.ResetOnSpawn = false\n"
+          "   screenGui.Parent = playerGui\n"
+          "3. SEMUA FRAME/BUTTON WAJIB ADA BackgroundColor3 (jangan transparansi semua).\n"
+          "4. Gunakan UDim2.new() untuk Size dan Position — WAJIB gunakan Scale (0-1) bukan hanya Offset.\n"
+          "5. Tombol WAJIB memiliki event handler: TextButton.MouseButton1Click:Connect() atau .Activated:Connect().\n"
+          "6. UICorner, UIStroke, UIListLayout WAJIB menggunakan Instance.new() dan set Parent ke parent frame/button.\n"
+          "7. DILARANG menggunakan ImageLabel dengan Image = 'rbxassetid://ANGKA'. Ganti dengan warna solid atau TextLabel.\n"
+          "8. Update dinamis UI: gunakan RemoteEvent atau ValueObject:GetPropertyChangedSignal().\n"
+          "CONTOH POLA MINIMAL YANG BENAR (SALIN TEMPLATE INI):\n"
+          "--!strict\n"
+          "local Players = game:GetService('Players')\n"
+          "local player = Players.LocalPlayer\n"
+          "local playerGui = player:WaitForChild('PlayerGui')\n"
+          "local screenGui = Instance.new('ScreenGui')\n"
+          "screenGui.Name = 'MyHUD'\n"
+          "screenGui.ResetOnSpawn = false\n"
+          "screenGui.Parent = playerGui\n"
+          "local mainFrame = Instance.new('Frame')\n"
+          "mainFrame.Size = UDim2.new(0.3, 0, 0.1, 0)\n"
+          "mainFrame.Position = UDim2.new(0.35, 0, 0.02, 0)\n"
+          "mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)\n"
+          "mainFrame.BorderSizePixel = 0\n"
+          "mainFrame.Parent = screenGui\n"
+          "local corner = Instance.new('UICorner')\n"
+          "corner.CornerRadius = UDim.new(0, 8)\n"
+          "corner.Parent = mainFrame\n"
+          "local label = Instance.new('TextLabel')\n"
+          "label.Size = UDim2.new(1, 0, 1, 0)\n"
+          "label.BackgroundTransparency = 1\n"
+          "label.Text = 'STATUS'\n"
+          "label.TextColor3 = Color3.fromRGB(255, 255, 255)\n"
+          "label.Font = Enum.Font.GothamBold\n"
+          "label.TextScaled = true\n"
+          "label.Parent = mainFrame\n"
+      ),
+
+      "SHOP_UI": (
+          "[KATEGORI: SHOP / TOKO / INVENTORY UI]\n"
+          "Anda membuat UI Toko/Inventory sebagai LocalScript di ScreenGui.\n"
+          "HUKUM SHOP UI:\n"
+          "1. DILARANG rbxassetid:// — gunakan HANYA kode Luau murni.\n"
+          "2. Buat ScrollingFrame untuk list item, isi dengan Frame per item menggunakan for loop.\n"
+          "3. Tombol Beli/Jual WAJIB ada event handler dan RemoteFunction ke server untuk validasi.\n"
+          "4. Tampilkan currency/gold pemain via RemoteFunction atau ValueObject.\n"
+          "5. Semua item menggunakan TextLabel untuk nama + harga, BUKAN ImageLabel dengan asset ID.\n"
+          "6. Server WAJIB validasi: pcall DataStore, cek currency cukup, cek item ada.\n"
+      ),
+
+      "INVENTORY_UI": (
+          "[KATEGORI: INVENTORY UI]\n"
+          "Anda membuat UI Inventory sebagai LocalScript di ScreenGui.\n"
+          "HUKUM INVENTORY UI:\n"
+          "1. DILARANG rbxassetid:// — gunakan HANYA kode Luau murni.\n"
+          "2. Grid layout menggunakan UIGridLayout di ScrollingFrame.\n"
+          "3. Setiap slot = Frame + UICorner + TextLabel (nama item) + TextLabel (jumlah).\n"
+          "4. Data inventory diminta ke server via RemoteFunction.\n"
+          "5. Update realtime: daftarkan listener ke RemoteEvent 'InventoryUpdated'.\n"
+          "6. JANGAN gunakan Image apapun — semua visual via BackgroundColor3 dan Text.\n"
+      ),
+
+      "HEALTH_BAR": (
+          "[KATEGORI: HEALTH BAR / STAMINA BAR / STATUS BAR UI]\n"
+          "Anda membuat status bar (HP/Stamina/Energy) sebagai LocalScript.\n"
+          "HUKUM STATUS BAR:\n"
+          "1. DILARANG rbxassetid:// — gunakan HANYA kode Luau murni.\n"
+          "2. Background frame (abu gelap) + fill frame (warna) menggunakan Size dengan Scale.\n"
+          "3. Update bar: humanoid.HealthChanged atau ValueObject:GetPropertyChangedSignal().\n"
+          "4. Animasi bar dengan TweenService untuk transisi mulus.\n"
+          "5. Contoh update HP bar:\n"
+          "   humanoid.HealthChanged:Connect(function(hp)\n"
+          "       local pct = hp / humanoid.MaxHealth\n"
+          "       local tween = TweenService:Create(fillFrame, TweenInfo.new(0.2), {Size = UDim2.new(pct, 0, 1, 0)})\n"
+          "       tween:Play()\n"
+          "   end)\n"
+      ),
+
+      "LEADERBOARD": (
+          "[KATEGORI: LEADERBOARD / SCOREBOARD UI]\n"
+          "Anda membuat papan skor sebagai LocalScript di ScreenGui.\n"
+          "HUKUM LEADERBOARD:\n"
+          "1. DILARANG rbxassetid:// — gunakan HANYA kode Luau murni.\n"
+          "2. Data dari server via RemoteFunction atau RemoteEvent.\n"
+          "3. Tampilkan daftar menggunakan UIListLayout + loop frame per pemain.\n"
+          "4. Update berkala menggunakan task.spawn + task.wait(interval).\n"
+          "5. Hapus entry lama sebelum populate ulang: for _, c in ipairs(listContainer:GetChildren()) do if c:IsA('Frame') then c:Destroy() end end.\n"
+      ),
+
+      "NOTIFICATION": (
+          "[KATEGORI: NOTIFICATION / TOAST / POPUP UI]\n"
+          "Anda membuat sistem notifikasi sebagai LocalScript di ScreenGui.\n"
+          "HUKUM NOTIFICATION UI:\n"
+          "1. DILARANG rbxassetid:// — gunakan HANYA kode Luau murni.\n"
+          "2. Animasi masuk/keluar menggunakan TweenService (Position atau Transparency).\n"
+          "3. Notifikasi baru spawn di atas, geser ke bawah jika ada antrian.\n"
+          "4. Notif otomatis hilang setelah N detik: task.delay(N, function() tween keluar, kemudian Destroy() end).\n"
+          "5. Subscribe ke RemoteEvent 'ShowNotification' dari server.\n"
+      ),
+
+      "MINIMAP": (
+          "[KATEGORI: MINIMAP / COMPASS UI]\n"
+          "Anda membuat minimap/kompas sebagai LocalScript di ScreenGui.\n"
+          "HUKUM MINIMAP:\n"
+          "1. DILARANG rbxassetid:// — gunakan HANYA kode Luau murni.\n"
+          "2. Frame bulat menggunakan UICorner CornerRadius = UDim.new(1, 0).\n"
+          "3. Titik pemain: Frame kecil berwarna yang posisinya diupdate tiap frame via RunService.Heartbeat.\n"
+          "4. Skala posisi dunia ke posisi UI: (worldPos - centerWorld) / worldRadius * frameRadius.\n"
+          "5. Clamp posisi titik agar tidak keluar frame minimap.\n"
+      ),
+
+  
 }
 
 # ============================================================
@@ -1396,6 +1519,13 @@ TASK_RAG_QUERIES: dict = {
     "AMMUNITION_CALIBER": "roblox luau ammunition bullet caliber damage penetration ModuleScript strict",
     "CORE_INVENTORY_SYSTEM": "roblox luau inventory extraction game datastore PlayerAdded PlayerRemoving strict",
     "CORE_INBOX_SYSTEM": "roblox luau mailbox inbox datastore player message reward claim strict",
+      "GUI_HUD": "roblox luau LocalScript ScreenGui Frame TextLabel TextButton UDim2 Color3 UICorner HUD strict",
+      "SHOP_UI": "roblox luau LocalScript ScreenGui shop store buy sell RemoteFunction ScrollingFrame strict",
+      "INVENTORY_UI": "roblox luau LocalScript ScreenGui inventory grid UIGridLayout slot item strict",
+      "HEALTH_BAR": "roblox luau LocalScript ScreenGui health bar TweenService humanoid HealthChanged strict",
+      "LEADERBOARD": "roblox luau LocalScript ScreenGui leaderboard scoreboard UIListLayout strict",
+      "NOTIFICATION": "roblox luau LocalScript ScreenGui notification toast popup TweenService strict",
+      "MINIMAP": "roblox luau LocalScript ScreenGui minimap compass RunService Heartbeat strict",
     "NPC_TRADER": "roblox luau NPC trader shop ProximityPrompt RemoteFunction weld constraint server",
     "LOBBY_SPACESHIP": "roblox luau lobby floating Part anchored CanCollide strict no raycast",
     "FURNITURE": "roblox luau furniture Part anchored hitbox separation no raycast strict",
@@ -1682,7 +1812,15 @@ class OmniSynthesizerAgent:
                 live_rag_data += devforum_context + "\n"
             if reddit_context:
                 live_rag_data += reddit_context + "\n"
-            live_rag_data += "GUNAKAN TEKS KODE DAN DISKUSI DI ATAS SEBAGAI INSPIRASI/CONTEKAN CARA MENYELESAIKAN TUGAS INI.\n"
+            live_rag_data += (
+                  "DOKTRIN ADAPTASI RAG (WAJIB DIPATUHI):\n"
+                  "1. FILTER STANDALONE: Kode dari GitHub mungkin standalone — adaptasikan ke arsitektur game ini.\n"
+                  "2. MUSNAHKAN ASSET ID: DILARANG KERAS menyalin atau menggunakan rbxassetid://, rbxthumb://, "
+                  "   Content ID, atau angka ID aset apapun dari kode GitHub. SEMUA aset visual WAJIB dibuat via "
+                  "   Instance.new() dengan properti BackgroundColor3, TextColor3, UICorner, UIStroke, dll.\n"
+                  "3. JANGAN SALIN BULAT-BULAT: Gunakan sebagai referensi logika saja, bukan template visual.\n"
+                  "4. PRIORITASKAN INSTRUKSI TASK DI ATAS: Aturan task lebih penting dari contoh GitHub.\n"
+              )
             comprehensive_prompt += live_rag_data
             console_terminal_interface.print(f"[dim green]  ✅ DevForum dan Raw GitHub disuntikkan ke prompt.[/dim green]")
 
@@ -1704,11 +1842,13 @@ class OmniSynthesizerAgent:
                 safe_prev_code = extract_pure_luau_code(previous_code)
                 similarity = difflib.SequenceMatcher(None, safe_prev_code, code_attempt).ratio()
 
-                if similarity < 0.15:
-                    console_terminal_interface.print(
-                        f"[bold red]  [SANITY CHECK GAGAL]: Kode baru hanya {similarity*100:.1f}% mirip. File terindikasi kosong/halusinasi. DITOLAK.[/bold red]"
-                    )
-                    return False, f"SANITY_CHECK_FAILED: Kode baru terlalu berbeda ({similarity*100:.1f}% similarity).", previous_code
+                # Threshold diturunkan ke 0.03 (3%) — kode yang diperbaiki total wajar sangat berbeda.
+                  # 0.15 terlalu agresif dan menolak perbaikan yang valid sehingga healer terlihat tidak bekerja.
+                  if similarity < 0.03 or (len(code_attempt.strip()) < 20):
+                      console_terminal_interface.print(
+                          f"[bold red]  [SANITY CHECK GAGAL]: Kode baru hanya {similarity*100:.1f}% mirip DAN sangat pendek — terindikasi kosong/halusinasi. DITOLAK.[/bold red]"
+                      )
+                      return False, f"SANITY_CHECK_FAILED: Kode baru hampir kosong ({similarity*100:.1f}% similarity, {len(code_attempt.strip())} char).", previous_code
 
             omni_ok, omni_msg = AbsoluteOmniValidator.execute_validation(code_attempt, req_keys, forb_keys)
             if not omni_ok:
