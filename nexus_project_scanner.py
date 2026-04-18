@@ -412,3 +412,355 @@ model.Parent = workspace
 
 [IKUTI TEMPLATE DI ATAS. TAMBAHKAN LOGIKA EQUIPMENTMU DI DALAMNYA. JANGAN ABAIKAN HitboxSeparation!]
 """
+
+"""
+nexus_project_scanner.py  v2.0.0
+==================================
+UPGRADE v2.0.0:
+  - scan_existing_project: membaca ISI file (snippet 300 char), bukan hanya nama
+  - scan_deep_validate: fungsi BARU — validasi aturan Roblox terbaru setiap file
+  - scan_and_repair_invalid_files: lebih agresif, hapus file yang melanggar aturan wajib
+  - search_github_for_hitbox_armor: tetap sama, sudah bagus
+"""
+
+import os
+import asyncio
+import subprocess
+import json
+import re
+import base64
+from typing import List
+
+try:
+    from nexus_config import (
+        SOURCE_CODE_DIRECTORY,
+        PROJECT_ROOT_DIRECTORY,
+        console_terminal_interface,
+        GEMINI_CLI_PATH,
+    )
+except ImportError:
+    SOURCE_CODE_DIRECTORY = os.path.join(os.path.expanduser("~"), "FantasyExtraction_Roblox_TrueApex", "src")
+    PROJECT_ROOT_DIRECTORY = os.path.join(os.path.expanduser("~"), "FantasyExtraction_Roblox_TrueApex")
+    console_terminal_interface = None
+    GEMINI_CLI_PATH = "gemini"
+
+
+def _log(msg: str):
+    if console_terminal_interface:
+        console_terminal_interface.print(msg)
+    else:
+        print(msg)
+
+
+def _get_github_token() -> str:
+    return (
+        os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+        or os.getenv("GITHUB_TOKEN", "")
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# ATURAN VALIDASI TERBARU (dipakai saat startup & scan)
+# ─────────────────────────────────────────────────────────────
+ROBLOX_VALIDATION_RULES = [
+    {
+        "id": "missing_strict",
+        "check": lambda lines, content, fname: not lines or lines[0].strip() != "--!strict",
+        "message": "Baris pertama bukan --!strict",
+        "autofix": lambda content: "--!strict\n" + content if not content.startswith("--!strict") else content,
+    },
+    {
+        "id": "enum_displayorder",
+        "check": lambda lines, content, fname: any("DisplayOrder" in l and "Enum." in l for l in lines),
+        "message": "DisplayOrder menggunakan Enum (harus integer)",
+        "autofix": lambda content: re.sub(r"(\.DisplayOrder\s*=\s*)Enum\.[A-Za-z0-9_.]+", r"\g<1>0", content),
+    },
+    {
+        "id": "enum_zindex",
+        "check": lambda lines, content, fname: any("ZIndex" in l and "Enum." in l for l in lines),
+        "message": "ZIndex menggunakan Enum (harus integer)",
+        "autofix": lambda content: re.sub(r"(\.ZIndex\s*=\s*)Enum\.[A-Za-z0-9_.]+", r"\g<1>0", content),
+    },
+    {
+        "id": "server_localplayer",
+        "check": lambda lines, content, fname: fname.endswith(".server.lua") and "game.Players.LocalPlayer" in content,
+        "message": "Server script menggunakan LocalPlayer (hanya boleh di LocalScript)",
+        "autofix": None,  # Perlu AI untuk perbaiki ini
+    },
+    {
+        "id": "empty_file",
+        "check": lambda lines, content, fname: len(content.strip()) < 5,
+        "message": "File kosong / tidak valid",
+        "autofix": None,
+    },
+]
+
+
+async def scan_existing_project(project_root: str = None) -> str:
+    """
+    UPGRADE v2.0: Membaca ISI setiap file Lua (snippet 300 char),
+    bukan hanya daftar nama. AI bisa paham konten modul yang sudah ada.
+    """
+    root = project_root or PROJECT_ROOT_DIRECTORY
+    src = os.path.join(root, "src")
+
+    _log("[bold cyan][ProjectScanner] Memulai scan mendalam direktori proyek...[/bold cyan]")
+
+    if not os.path.exists(root):
+        return "[KONTEKS PROYEK]: Direktori proyek belum ada. Sistem memulai dari scratch.\n"
+
+    lua_files: List[dict] = []
+    total_lines = 0
+    folder_counts: dict = {}
+    valid_exts = {".lua", ".luau"}
+
+    for dirpath, dirnames, filenames in os.walk(src):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fname in filenames:
+            if os.path.splitext(fname)[1] in valid_exts:
+                full_path = os.path.join(dirpath, fname)
+                rel_path = os.path.relpath(full_path, src)
+                try:
+                    with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    lines = content.count("\n") + 1
+                    total_lines += lines
+                    folder = rel_path.split(os.sep)[0]
+                    folder_counts[folder] = folder_counts.get(folder, 0) + 1
+                    # UPGRADE: simpan snippet ISI file (300 char pertama)
+                    lua_files.append({
+                        "rel_path": rel_path,
+                        "lines": lines,
+                        "snippet": content[:300].strip(),
+                        "has_strict": content.startswith("--!strict"),
+                    })
+                except Exception:
+                    pass
+
+    if not lua_files:
+        return "[KONTEKS PROYEK]: Direktori src ada tapi KOSONG. Sistem memulai menulis modul pertama.\n"
+
+    summary = ["[KONTEKS PROYEK - SCAN MENDALAM v2.0]"]
+    summary.append(f"Total file Lua: {len(lua_files)} | Total baris: {total_lines}")
+    summary.append("Distribusi per folder:")
+    for folder, count in sorted(folder_counts.items()):
+        summary.append(f"  - {folder}: {count} file")
+    summary.append("")
+    summary.append("Modul yang SUDAH ADA (dengan snippet isi kode):")
+
+    for entry in lua_files[:50]:
+        strict_flag = "strict" if entry["has_strict"] else "NO-STRICT"
+        summary.append(f"  [{strict_flag}] {entry['rel_path']} ({entry['lines']} baris)")
+        if entry["snippet"]:
+            # Tampilkan 2 baris pertama snippet sebagai konteks
+            snippet_lines = entry["snippet"].split("\n")[:2]
+            for sl in snippet_lines:
+                summary.append(f"    | {sl}")
+
+    if len(lua_files) > 50:
+        summary.append(f"  ... dan {len(lua_files) - 50} modul lainnya.")
+
+    summary.append("")
+    summary.append("INSTRUKSI AI: Baca daftar di atas. JANGAN buat ulang modul yang sudah ada.")
+    summary.append("Fokus isi GAP. Gunakan nama modul yang ada untuk require() yang akurat.")
+
+    context_str = "\n".join(summary) + "\n"
+    _log(f"[bold green][ProjectScanner] Scan mendalam selesai: {len(lua_files)} modul[/bold green]")
+    return context_str
+
+
+async def scan_deep_validate(project_root: str = None, auto_fix: bool = True) -> dict:
+    """
+    FUNGSI BARU v2.0: Validasi ISI setiap file berdasarkan ATURAN TERBARU Roblox.
+    Dipanggil saat agent pertama kali nyala (dari nexus_main.py).
+    Bisa auto-fix masalah yang bisa diperbaiki otomatis.
+
+    Returns dict:
+        {
+            "total": int,
+            "valid": int,
+            "fixed": int,
+            "need_ai": list of {file, issues},
+            "report": str,
+        }
+    """
+    root = project_root or PROJECT_ROOT_DIRECTORY
+    src = os.path.join(root, "src")
+
+    result = {"total": 0, "valid": 0, "fixed": 0, "need_ai": [], "report": ""}
+
+    if not os.path.exists(src):
+        result["report"] = "Direktori src belum ada."
+        return result
+
+    lua_files = []
+    for dirpath, dirnames, filenames in os.walk(src):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fname in filenames:
+            if fname.endswith((".lua", ".luau")):
+                lua_files.append(os.path.join(dirpath, fname))
+
+    result["total"] = len(lua_files)
+    report_lines = [f"[Scan Mendalam] {len(lua_files)} file diperiksa"]
+
+    for fpath in lua_files:
+        fname = os.path.basename(fpath)
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            lines = content.split("\n")
+        except Exception as e:
+            result["need_ai"].append({"file": fname, "issues": [f"Gagal baca: {e}"]})
+            continue
+
+        file_issues = []
+        new_content = content
+
+        for rule in ROBLOX_VALIDATION_RULES:
+            if rule["check"](lines, content, fname):
+                file_issues.append(rule["message"])
+                if auto_fix and rule["autofix"]:
+                    new_content = rule["autofix"](new_content)
+
+        if new_content != content and auto_fix:
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            result["fixed"] += 1
+            report_lines.append(f"  [AUTO-FIX] {fname}: {', '.join(file_issues)}")
+        elif file_issues:
+            result["need_ai"].append({"file": fname, "issues": file_issues})
+            report_lines.append(f"  [PERLU AI] {fname}: {', '.join(file_issues)}")
+        else:
+            result["valid"] += 1
+
+    result["report"] = "\n".join(report_lines)
+    _log(f"[bold green][ProjectScanner] Validasi selesai: {result['valid']} valid, {result['fixed']} auto-fix, {len(result['need_ai'])} perlu AI[/bold green]")
+    return result
+
+
+_FILENAME_KEYWORD_RULES: dict = {
+    "ARMOR":     ["HitboxSeparation", "CanCollide", "ArmorTier", "ItemCategory", "Recipe", "Anchored"],
+    "HELMET":    ["HitboxSeparation", "CanCollide", "ArmorTier", "ItemCategory", "Recipe", "Anchored"],
+    "WEAPON":    ["HitboxSeparation", "CanCollide", "ItemCategory", "Recipe"],
+    "FURNITURE": ["HitboxSeparation", "CanCollide", "Anchored"],
+    "BIOME":     ["HitboxSeparation", "Raycast"],
+    "TREE":      ["HitboxSeparation", "CanCollide", "Anchored"],
+    "ROCK":      ["HitboxSeparation", "CanCollide", "Anchored"],
+    "BUILDING":  ["HitboxSeparation", "CanCollide", "Anchored"],
+}
+
+
+async def scan_and_repair_invalid_files(project_root: str = None) -> str:
+    root = project_root or PROJECT_ROOT_DIRECTORY
+    src = os.path.join(root, "src")
+    if not os.path.exists(src):
+        return "[Repair] Direktori src belum ada.\n"
+
+    repaired: List[str] = []
+    checked: int = 0
+    valid_exts = {".lua", ".luau"}
+
+    for dirpath, dirnames, filenames in os.walk(src):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fname in filenames:
+            if os.path.splitext(fname)[1] not in valid_exts:
+                continue
+            full_path = os.path.join(dirpath, fname)
+            fname_upper = fname.upper()
+            checked += 1
+
+            matched_rule_key = next((k for k in _FILENAME_KEYWORD_RULES if k in fname_upper), None)
+            if not matched_rule_key:
+                continue
+
+            required_keywords = _FILENAME_KEYWORD_RULES[matched_rule_key]
+            try:
+                with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+            except Exception:
+                continue
+
+            missing = [kw for kw in required_keywords if kw not in content]
+            if not missing:
+                continue
+
+            rel_path = os.path.relpath(full_path, src)
+            _log(f"[bold yellow][FileRepair] File tidak valid dihapus: {rel_path} | Missing: {missing}[/bold yellow]")
+            os.remove(full_path)
+            repaired.append(f"{rel_path} (missing: {', '.join(missing)})")
+
+    if repaired:
+        return f"[Repair] {len(repaired)} file tidak valid dihapus (akan diregenerasi):\n" + "\n".join(f"  - {r}" for r in repaired) + "\n"
+    return f"[Repair] Semua {checked} file valid. Tidak ada yang perlu dihapus.\n"
+
+
+async def search_github_for_hitbox_armor() -> str:
+    _log("[bold cyan][ProjectScanner] Mencari referensi HitboxSeparation di GitHub...[/bold cyan]")
+    github_token = _get_github_token()
+    loop = asyncio.get_running_loop()
+
+    reference_sources = [
+        {"url": "https://raw.githubusercontent.com/Sleitnick/RbxUtil/main/modules/component/README.md", "label": "RbxUtil/component"},
+        {"url": "https://raw.githubusercontent.com/EgoMoose/Rbx-Part-Align/master/README.md", "label": "EgoMoose/Rbx-Part-Align"},
+    ]
+
+    fetched_refs: List[str] = []
+    for source in reference_sources:
+        cmd = ["curl", "-s", "--max-time", "10", "-H", "User-Agent: NexusAgent/2.0"]
+        if github_token:
+            cmd += ["-H", f"Authorization: Bearer {github_token}"]
+        cmd.append(source["url"])
+        try:
+            proses = await loop.run_in_executor(None, lambda c=cmd: subprocess.run(c, capture_output=True, text=True, timeout=12))
+            if proses.returncode == 0 and proses.stdout and len(proses.stdout) > 50:
+                fetched_refs.append(f"--- REF: {source['label']} ---\n{proses.stdout[:800]}\n")
+        except Exception:
+            pass
+
+    hitbox_reference = """
+[REFERENSI HITBOX SEPARATION ARMOR - STANDAR AAA DEVFORUM]:
+
+--!strict
+local function createHitboxSeparation(parent, size, cframe)
+    local hitbox = Instance.new("Part")
+    hitbox.Name = "HitboxSeparation"
+    hitbox.Size = size
+    hitbox.CFrame = cframe
+    hitbox.Transparency = 1
+    hitbox.CanCollide = true
+    hitbox.Anchored = true
+    hitbox.Parent = parent
+
+    local visualMesh = Instance.new("Part")
+    visualMesh.Name = "VisualMesh"
+    visualMesh.CanCollide = false
+    visualMesh.Anchored = true
+    visualMesh.CFrame = cframe
+    visualMesh.Parent = parent
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = hitbox
+    weld.Part1 = visualMesh
+    weld.Parent = hitbox
+    return hitbox
+end
+
+WAJIB: HitboxSeparation, CanCollide=true (hitbox), CanCollide=false (visual), WeldConstraint.
+"""
+    if fetched_refs:
+        hitbox_reference += "\n".join(fetched_refs)
+
+    return hitbox_reference
+
+
+def get_armor_hitbox_mandatory_template() -> str:
+    return """--!strict
+-- HitboxSeparation Template Wajib
+local ArmorItem = {}
+local ItemCategory: string = "Armor"
+local BasePrice: number = 2500
+local ArmorTier: number = 4
+local Recipe = { IronIngot = 3, CeramicPlate = 2, LeatherStrip = 1 }
+return ArmorItem
+"""
+
