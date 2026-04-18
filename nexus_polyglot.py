@@ -2000,18 +2000,29 @@ JSON ARRAY:"""
             "Buat kode HANYA jika pengguna memintanya secara eksplisit."
         )
         try:
-            # Gunakan model ringan khusus chat (gemini-3.1-flash-lite-preview)
-            # agar tidak bersaing rate limit dengan pipeline Roblox (gemma-4-31b-it) maupun Telegram coding (gemma-4-26b-a4b-it)
-            reply = await self._call_gemini_chat(system_prompt, text)
+            # Perbaikan: Tambahkan retry otomatis jika gagal agar tidak "sibuk"
+            reply = ""
+            for retry in range(3):
+                reply = await self._call_gemini_chat(system_prompt, text)
+                if reply and not reply.startswith("ERROR") and len(reply.strip()) > 5:
+                    break
+                await asyncio.sleep(2)
+            
             if reply and not reply.startswith("ERROR") and len(reply.strip()) > 5:
                 await self._send(chat_id, reply.strip())
             else:
-                await self._send(
-                    chat_id,
-                    "AI chat sedang sibuk. Coba lagi sebentar!"
-                )
-        except Exception:
-            await self._send(chat_id, "AI chat sedang sibuk. Coba lagi sebentar!")
+                # Fallback: Berikan jawaban cerdas tanpa AI jika benar-benar sibuk
+                if "status" in text.lower():
+                    await self._send(chat_id, "Sistem aktif. Gunakan /status untuk detail lengkap.")
+                else:
+                    await self._send(
+                        chat_id,
+                        "Maaf, saya sedang memproses banyak permintaan. "
+                        "Silakan coba lagi dalam beberapa detik, atau gunakan perintah /status."
+                    )
+        except Exception as e:
+            console_terminal_interface.print(f"[red]Polyglot Chat Error: {e}[/red]")
+            await self._send(chat_id, "Terjadi gangguan koneksi ke otak AI. Mencoba memulihkan...")
 
     async def start_polling(self):
         console_terminal_interface.print(

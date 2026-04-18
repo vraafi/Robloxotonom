@@ -757,10 +757,14 @@ async def cmd_autofix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
+    if chat_id != _OWNER_CHAT_ID:
+        return
+    # Membersihkan state dan memori agent secara permanen
     _user_state.pop(chat_id, None)
     global_agent_memory.clear()
     await update.message.reply_text(
-        "Percakapan direset.\nKirim /start untuk mulai lagi.",
+        "Sesi, histori percakapan, dan cache memori telah DIBERSIHKAN TOTAL.\n"
+        "Kirim /start untuk memulai sesi baru.",
         reply_markup=_main_menu_keyboard(),
     )
 
@@ -883,6 +887,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     text = (update.message.text or "").strip()
     if not text:
+        return
+
+    # PRIORITAS: Cek perintah kontrol teks (Stop / Continue) agar responsif
+    text_cmd = text.lower()
+    if text_cmd in ["stop", "/stop", "berhenti", "henti"]:
+        await _do_stop(update.message.reply_text)
+        return
+    elif text_cmd in ["continue", "/continue", "lanjutkan", "lanjut"]:
+        await _do_continue(update.message.reply_text)
         return
 
     # Cek apakah menunggu instruksi tambahan setelah task gagal

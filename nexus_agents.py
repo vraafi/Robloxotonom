@@ -1587,7 +1587,13 @@ class OmniSynthesizerAgent:
             "Jika nama task mengandung kata WORLD/TERRAIN/LIGHTING/ATMOSPHERE/SKYBOX/SPAWN/ZONE/MAP/AMBIENT/FOG → "
             "kamu sedang membuat script lingkungan dunia (Script di ServerScriptService atau Workspace). "
             "Kode Luau yang kamu hasilkan akan OTOMATIS dibungkus ke file .rbxmx oleh Asset Engine. "
-            "Tugas kamu: tulis HANYA logika Luau murni yang sesuai tipe task tersebut."
+            "Tugas kamu: tulis HANYA logika Luau murni yang sesuai tipe task tersebut.\n"
+            "PENTING: JANGAN mengambil jalan pintas. Buat aset yang SEBENARNYA.\n"
+            "CONTOH STRUKTUR ASET YANG BENAR:\n"
+            "- GUI: Harus ada Instance.new('ScreenGui'), Frame, TextLabel, dll. dengan properti visual lengkap (Size, Position, Color3, Font).\n"
+            "- MODEL: Harus ada Instance.new('Model'), Part (sebagai PrimaryPart), dan Script di dalamnya.\n"
+            "- MESH: Gunakan SpecialMesh atau MeshPart dengan rbxassetid yang valid (atau placeholder visual yang kuat).\n"
+            "DILARANG hanya menulis komentar '-- asset code here'. Kamu WAJIB mengimplementasikan visualnya."
         )
 
     @staticmethod
@@ -2068,8 +2074,8 @@ async def execute_antigravity_fleet(
             "Melanjutkan ke analisis laporan..."
         )
 
-    # ── 2. Analisis laporan → daftar task ─────────────────────────────────
-    await send_fn("Menganalisis laporan: " + user_report[:100] + "...")
+    # ── 2. Analisis laporan → daftar task (Alur Terstruktur) ───────────────
+    await send_fn("Menganalisis laporan & Membuat Daftar Tugas...")
 
     try:
         fleet_leader = OmniSynthesizerAgent(
@@ -2078,7 +2084,6 @@ async def execute_antigravity_fleet(
         )
         tasks = await fleet_leader.analyze_user_report(user_report, project_context)
     except Exception as e:
-        await send_fn("Analisis gagal: " + str(e)[:100] + ". Menggunakan fallback...")
         tasks = [{
             "id": 1,
             "title": "Perbaiki masalah yang dilaporkan",
@@ -2089,12 +2094,18 @@ async def execute_antigravity_fleet(
             "detail": user_report,
         }]
 
+    # Format Daftar Tugas untuk Pengguna
+    task_list_str = "📋 **DAFTAR TUGAS NEXUS AGENT**\n"
+    task_list_str += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    for i, t in enumerate(tasks, 1):
+        task_list_str += f"{i}. {t.get('title', 'Tugas Tanpa Judul')}\n"
+    task_list_str += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    task_list_str += f"⚡ Status: Memulai eksekusi dengan {n_workers} worker (Infinity Retry AKTIF)\n"
+    
+    await send_fn(task_list_str)
+    await asyncio.sleep(3) # Beri waktu pengguna membaca daftar tugas
+
     progress["total"] = len(tasks)
-    await send_fn(
-        str(len(tasks)) + " task ditemukan.\n"
-        "Worker aktif: " + str(n_workers) + " (satu per API key)\n"
-        "Setiap task dikerjakan sampai 100% lulus — tidak ada yang di-skip."
-    )
 
     # ── 3. Antrian task ───────────────────────────────────────────────────
     task_queue: asyncio.Queue = asyncio.Queue()
