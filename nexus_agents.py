@@ -1765,3 +1765,256 @@ class OmniSynthesizerAgent:
 
         else:
             return False, result_data, previous_code
+
+
+# ============================================================
+# PATCH UNTUK nexus_agents.py
+# Tambahkan kode di bawah ini ke BAGIAN ATAS nexus_agents.py
+# (setelah semua import yang sudah ada)
+# ============================================================
+
+import threading as _threading
+
+# State pause dari telegram bot (di-set oleh nexus_telegram_bot.py)
+# Jika tidak ada, buat event sendiri (default: aktif/not paused)
+try:
+    from nexus_telegram_bot import _roblox_agent_paused
+except ImportError:
+    _roblox_agent_paused = _threading.Event()
+    _roblox_agent_paused.set()
+
+
+class NexusGlobalState:
+    """State global agent — diakses oleh telegram bot untuk stop/continue."""
+    is_running: bool = True
+    current_task: str = ""
+    total_tasks_done: int = 0
+    total_tasks_failed: int = 0
+
+
+# Memory global antar sesi
+global_agent_memory: dict = {}
+
+
+async def execute_with_persistent_retry(
+    task_func,
+    task_name: str,
+    send_telegram_fn,
+    max_attempts: int = 10,
+    github_search_fn=None,
+    extra_context: str = "",
+):
+    """
+    Wrapper retry universal — dipakai oleh OmniSynthesizerAgent & AutoHealerAgent.
+
+    Pipeline per percobaan:
+      1. Cek pause (/stop) — tunggu /continue jika di-pause
+      2. Jalankan task_func(extra_context=...)
+      3. Jika gagal < 10x: cari panduan di GitHub lalu retry
+      4. Jika gagal 10x: tanya owner di Telegram, tunggu jawaban infinite
+    """
+    last_error = ""
+    github_context = extra_context
+
+    for attempt in range(1, max_attempts + 1):
+        NexusGlobalState.current_task = task_name
+
+        # === CEK PAUSE ===
+        if not _roblox_agent_paused.is_set():
+            print(f"[Agent PAUSE] Task '{task_name}' dijeda. Menunggu /continue...")
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _roblox_agent_paused.wait)
+            print(f"[Agent RESUME] Task '{task_name}' dilanjutkan.")
+
+        # === CEK STOP GLOBAL ===
+        if not NexusGlobalState.is_running:
+            return None
+
+        try:
+            result = await task_func(extra_context=github_context)
+            NexusGlobalState.total_tasks_done += 1
+            return result
+
+        except asyncio.CancelledError:
+            raise  # Propagate CancelledError agar /stop bisa bekerja
+
+        except Exception as e:
+            last_error = str(e)
+            print(f"[Retry {attempt}/{max_attempts}] '{task_name}': {last_error[:100]}")
+
+        # Setelah 3x gagal: cari panduan di GitHub
+        if attempt >= 3 and github_search_fn:
+            query = f"roblox luau {task_name} {last_error[:40]}"
+            try:
+                github_result = await github_search_fn(query)
+                if github_result:
+                    github_context = github_result
+                    print(f"[GitHub Context] +{len(github_context)} char konteks ditambahkan")
+            except Exception:
+                pass
+
+        if attempt < max_attempts:
+            wait = min(10 * attempt, 60)
+            await asyncio.sleep(wait)
+
+    # === 10x GAGAL → TANYA OWNER ===
+    NexusGlobalState.total_tasks_failed += 1
+    await send_telegram_fn(
+        "AI Butuh Bantuan!\n\n"
+        "Task: " + task_name + "\n"
+        "Sudah " + str(max_attempts) + "x gagal (termasuk pencarian GitHub).\n\n"
+        "Error terakhir:\n" + last_error[:400] + "\n\n"
+        "Balas pesan ini dengan instruksi tambahan. Agent menunggu jawaban kamu."
+    )
+    return None  # Ditangani oleh message handler di telegram bot
+
+
+# ============================================================
+# Juga tambahkan baris ini di BAGIAN BAWAH nexus_agents.py
+# (setelah semua class dan fungsi yang sudah ada)
+# ============================================================
+
+async def execute_antigravity_fleet(
+    user_report: str,
+    status_message,
+    bot_instance,
+    chat_id: str,
+):
+    """
+    Entry point dari nexus_telegram_bot.py untuk Mode Roblox.
+    Jika fungsi ini sudah ada di nexus_agents.py kamu, SKIP bagian ini.
+    Jika belum ada, tambahkan fungsi ini.
+    """
+    from nexus_project_scanner import scan_existing_project, scan_deep_validate
+
+    async def send_fn(text):
+        try:
+            await status_message.edit_text(text)
+        except Exception:
+            pass
+
+    # 1. Scan mendalam isi file
+    await send_fn("Scanning isi file project (v2.0 deep scan)...")
+    project_context = await scan_existing_project()
+    validate_result = await scan_deep_validate(auto_fix=True)
+
+    if validate_result["fixed"] > 0:
+        await send_fn(
+            "Auto-fix " + str(validate_result["fixed"]) + " file bermasalah selesai.\n"
+            "Melanjutkan ke analisis laporan..."
+        )
+
+    # 2. Analisis laporan → task list
+    await send_fn("Menganalisis laporan: " + user_report[:100] + "...")
+
+    # Gunakan OmniSynthesizerAgent jika ada, atau fallback ke task sederhana
+    try:
+        agent = OmniSynthesizerAgent(
+            agent_id="fleet_leader",
+            api_key=ACTIVE_AGENTS[0]["api_key"],
+        )
+        tasks = await agent.analyze_user_report(user_report, project_context)
+    except Exception as e:
+        await send_fn("Analisis gagal: " + str(e)[:100] + ". Menggunakan fallback...")
+        tasks = [{
+            "id": 1,
+            "title": "Perbaiki masalah yang dilaporkan",
+            "target_folder": "StarterGui",
+            "target_file_hint": "unknown",
+            "action": "fix_bug",
+            "priority": "high",
+            "detail": user_report,
+        }]
+
+    await send_fn(str(len(tasks)) + " task ditemukan. Memulai eksekusi paralel...")
+
+    # 3. Eksekusi semua task dengan persistent retry
+    results = await asyncio.gather(
+        *[
+            execute_with_persistent_retry(
+                task_func=lambda ctx="", t=task: _execute_one_task(t, ctx),
+                task_name=task.get("title", "Task " + str(task.get("id", "?"))),
+                send_telegram_fn=send_fn,
+                max_attempts=10,
+                github_search_fn=LuauKnowledgeScraper.search_github_luau,
+            )
+            for task in tasks
+        ],
+        return_exceptions=True,
+    )
+
+    done = sum(1 for r in results if r is not None and not isinstance(r, Exception))
+    failed = len(results) - done
+
+    await send_fn(
+        "Fleet selesai!\n"
+        "Berhasil: " + str(done) + "/" + str(len(tasks)) + "\n"
+        "Gagal: " + str(failed) + "\n\n"
+        "Memulai Rojo build..."
+    )
+
+    # 4. Build Rojo
+    try:
+        from nexus_main import RobloxDeployer
+        build_ok, stderr = RobloxDeployer.compile_rojo()
+        if build_ok:
+            await send_fn("Build berhasil! File .rbxl siap.")
+        else:
+            await send_fn("Build gagal:\n" + stderr[:300])
+    except Exception as e:
+        await send_fn("Build error: " + str(e)[:200])
+
+
+async def _execute_one_task(task: dict, extra_context: str = "") -> str:
+    """Helper untuk eksekusi satu task Roblox (dipakai oleh execute_antigravity_fleet)."""
+    import re as _re
+    from nexus_config import SOURCE_CODE_DIRECTORY as _SRC
+
+    hint = task.get("target_file_hint", "")
+    folder = task.get("target_folder", "")
+    detail = task.get("detail", "")
+    action = task.get("action", "fix_bug")
+
+    # Cari file
+    file_path = None
+    if hint and hint != "unknown":
+        for root, dirs, files in os.walk(_SRC):
+            for fname in files:
+                if hint.lower() in fname.lower() and fname.endswith((".lua", ".luau", ".rbxmx")):
+                    file_path = os.path.join(root, fname)
+                    break
+
+    if file_path and os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            original_code = f.read()
+    else:
+        original_code = ""
+        safe_name = _re.sub(r"[^\w]", "_", task.get("title", "new_feature")).upper()
+        fname = safe_name + (".server.lua" if folder == "ServerScriptService" else ".client.lua" if folder in ("StarterGui", "StarterPlayerScripts") else ".lua")
+        file_path = os.path.join(_SRC, folder, fname)
+
+    code_context = original_code[:4000] if original_code else "(File baru)"
+    ctx_extra = ("KONTEKS GITHUB:\n" + extra_context) if extra_context else ""
+
+    prompt = (
+        "Kamu adalah senior Roblox Luau developer.\n"
+        "TUGAS: " + detail + "\n"
+        "AKSI: " + action + "\n"
+        "KODE SAAT INI:\n" + code_context + "\n"
+        + ctx_extra + "\n"
+        "ATURAN: --!strict wajib, ZIndex/DisplayOrder harus integer, HANYA output kode Luau.\n"
+        "KODE DIPERBAIKI:"
+    )
+
+    fixed_code = await execute_gemini_cli_pure(prompt, ACTIVE_AGENTS[0]["api_key"])
+    fixed_code = extract_pure_luau_code(fixed_code)
+
+    if not fixed_code:
+        raise Exception("Gemini output kosong")
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(fixed_code)
+
+    return "OK: " + os.path.basename(file_path)
+
