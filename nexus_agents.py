@@ -1922,23 +1922,27 @@ async def execute_with_persistent_retry(
     task_func,
     task_name: str,
     send_telegram_fn,
-    max_attempts: int = 10,
+    max_attempts: int = 0,
     github_search_fn=None,
     extra_context: str = "",
 ):
     """
-    Wrapper retry universal — dipakai oleh OmniSynthesizerAgent & AutoHealerAgent.
+    Wrapper retry tanpa batas (infinite) — task WAJIB selesai 100%, tidak pernah di-skip.
 
     Pipeline per percobaan:
       1. Cek pause (/stop) — tunggu /continue jika di-pause
       2. Jalankan task_func(extra_context=...)
-      3. Jika gagal < 10x: cari panduan di GitHub lalu retry
-      4. Jika gagal 10x: tanya owner di Telegram, tunggu jawaban infinite
+      3. Jika gagal >= 3x: cari panduan di GitHub lalu retry
+      4. Tidak ada batas percobaan — terus sampai berhasil
+    Catatan: max_attempts dipertahankan sebagai parameter untuk kompatibilitas,
+    tapi nilainya diabaikan (selalu infinite).
     """
     last_error = ""
     github_context = extra_context
+    attempt = 0
 
-    for attempt in range(1, max_attempts + 1):
+    while True:
+        attempt += 1
         NexusGlobalState.current_task = task_name
 
         # === CEK PAUSE ===
@@ -1962,33 +1966,22 @@ async def execute_with_persistent_retry(
 
         except Exception as e:
             last_error = str(e)
-            print(f"[Retry {attempt}/{max_attempts}] '{task_name}': {last_error[:100]}")
+            print(f"[Retry {attempt}] '{task_name}': {last_error[:100]}")
 
-        # Setelah 3x gagal: cari panduan di GitHub
-        if attempt >= 3 and github_search_fn:
+        # Setelah 3x gagal: cari panduan di GitHub (sekali, tidak berulang setiap 3x)
+        if attempt == 3 and github_search_fn:
             query = f"roblox luau {task_name} {last_error[:40]}"
             try:
                 github_result = await github_search_fn(query)
                 if github_result:
                     github_context = github_result
-                    print(f"[GitHub Context] +{len(github_context)} char konteks ditambahkan")
+                    print(f"[GitHub Context] +{len(github_context)} char konteks ditambahkan untuk '{task_name}'")
             except Exception:
                 pass
 
-        if attempt < max_attempts:
-            wait = min(10 * attempt, 60)
-            await asyncio.sleep(wait)
-
-    # === 10x GAGAL → TANYA OWNER ===
-    NexusGlobalState.total_tasks_failed += 1
-    await send_telegram_fn(
-        "AI Butuh Bantuan!\n\n"
-        "Task: " + task_name + "\n"
-        "Sudah " + str(max_attempts) + "x gagal (termasuk pencarian GitHub).\n\n"
-        "Error terakhir:\n" + last_error[:400] + "\n\n"
-        "Balas pesan ini dengan instruksi tambahan. Agent menunggu jawaban kamu."
-    )
-    return None  # Ditangani oleh message handler di telegram bot
+        # Tunggu sebelum retry (maks 60 detik)
+        wait = min(10 * attempt, 60)
+        await asyncio.sleep(wait)
 
 
 async def execute_antigravity_fleet(
@@ -1999,38 +1992,52 @@ async def execute_antigravity_fleet(
 ):
     """
     Entry point dari nexus_telegram_bot.py untuk Mode Roblox.
-    Jika fungsi ini sudah ada di nexus_agents.py kamu, SKIP bagian ini.
-    Jika belum ada, tambahkan fungsi ini.
+
+    Arsitektur Worker Pool:
+    - N worker berjalan paralel (N = jumlah API key aktif, maks 10)
+    - Setiap worker mengambil 1 task dari antrian, mengerjakannya sampai LULUS validasi,
+      baru kemudian mengambil task berikutnya
+    - Task TIDAK PERNAH di-skip — infinite retry sampai 100% berhasil
+    - Jika 3x gagal, ambil panduan dari GitHub sebelum retry berikutnya
     """
     from nexus_project_scanner import scan_existing_project, scan_deep_validate
 
-    async def send_fn(text):
+    n_workers = len(ACTIVE_AGENTS)  # Biasanya 10
+
+    # ── Progress tracking ──────────────────────────────────────────────────
+    progress = {
+        "done": 0,
+        "total": 0,
+        "worker_status": ["idle"] * n_workers,
+        "stopped": False,
+    }
+
+    async def send_fn(text: str):
         try:
-            await status_message.edit_text(text)
+            await status_message.edit_text(text[:4000])
         except Exception:
             pass
 
-    # 1. Scan mendalam isi file
-    await send_fn("Scanning isi file project (v2.0 deep scan)...")
+    # ── 1. Scan mendalam isi file ──────────────────────────────────────────
+    await send_fn("Scanning isi file project (deep scan)...")
     project_context = await scan_existing_project()
     validate_result = await scan_deep_validate(auto_fix=True)
 
-    if validate_result["fixed"] > 0:
+    if validate_result.get("fixed", 0) > 0:
         await send_fn(
             "Auto-fix " + str(validate_result["fixed"]) + " file bermasalah selesai.\n"
             "Melanjutkan ke analisis laporan..."
         )
 
-    # 2. Analisis laporan → task list
+    # ── 2. Analisis laporan → daftar task ─────────────────────────────────
     await send_fn("Menganalisis laporan: " + user_report[:100] + "...")
 
-    # Gunakan OmniSynthesizerAgent jika ada, atau fallback ke task sederhana
     try:
-        agent = OmniSynthesizerAgent(
+        fleet_leader = OmniSynthesizerAgent(
             agent_id="fleet_leader",
             api_key=ACTIVE_AGENTS[0]["api_key"],
         )
-        tasks = await agent.analyze_user_report(user_report, project_context)
+        tasks = await fleet_leader.analyze_user_report(user_report, project_context)
     except Exception as e:
         await send_fn("Analisis gagal: " + str(e)[:100] + ". Menggunakan fallback...")
         tasks = [{
@@ -2043,47 +2050,167 @@ async def execute_antigravity_fleet(
             "detail": user_report,
         }]
 
-    await send_fn(str(len(tasks)) + " task ditemukan. Memulai eksekusi paralel...")
-
-    # 3. Eksekusi semua task dengan persistent retry
-    results = await asyncio.gather(
-        *[
-            execute_with_persistent_retry(
-                task_func=lambda ctx="", t=task: _execute_one_task(t, ctx),
-                task_name=task.get("title", "Task " + str(task.get("id", "?"))),
-                send_telegram_fn=send_fn,
-                max_attempts=10,
-                github_search_fn=LuauKnowledgeScraper.search_github_luau,
-            )
-            for task in tasks
-        ],
-        return_exceptions=True,
+    progress["total"] = len(tasks)
+    await send_fn(
+        str(len(tasks)) + " task ditemukan.\n"
+        "Worker aktif: " + str(n_workers) + " (satu per API key)\n"
+        "Setiap task dikerjakan sampai 100% lulus — tidak ada yang di-skip."
     )
 
-    done = sum(1 for r in results if r is not None and not isinstance(r, Exception))
-    failed = len(results) - done
+    # ── 3. Antrian task ───────────────────────────────────────────────────
+    task_queue: asyncio.Queue = asyncio.Queue()
+    for t in tasks:
+        await task_queue.put(t)
 
-    await send_fn(
-        "Fleet selesai!\n"
-        "Berhasil: " + str(done) + "/" + str(len(tasks)) + "\n"
-        "Gagal: " + str(failed) + "\n\n"
+    # ── 4. Status updater (update Telegram setiap 20 detik) ───────────────
+    async def status_updater():
+        while not progress["stopped"]:
+            await asyncio.sleep(20)
+            if progress["stopped"]:
+                break
+            lines = [
+                "STATUS NEXUS FLEET",
+                "Progress: " + str(progress["done"]) + "/" + str(progress["total"]),
+                "",
+            ]
+            for i, ws in enumerate(progress["worker_status"]):
+                lines.append("Worker " + str(i + 1) + ": " + ws)
+            try:
+                await status_message.edit_text("\n".join(lines)[:4000])
+            except Exception:
+                pass
+
+    # ── 5. Worker function ────────────────────────────────────────────────
+    async def worker(worker_id: int):
+        """
+        Satu worker = satu API key.
+        Ambil task → kerjakan sampai lulus validasi → ambil task berikutnya.
+        """
+        agent_cfg = ACTIVE_AGENTS[worker_id % len(ACTIVE_AGENTS)]
+
+        while True:
+            # Ambil task berikutnya dari antrian
+            try:
+                task = task_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                progress["worker_status"][worker_id] = "idle (selesai)"
+                return
+
+            task_name = task.get("title", "Task " + str(task.get("id", "?")))
+            attempt = 0
+            github_context = ""
+
+            # Retry tanpa batas sampai task lulus validasi
+            while True:
+                attempt += 1
+
+                # Cek pause (/stop dari Telegram)
+                if not _roblox_agent_paused.is_set():
+                    progress["worker_status"][worker_id] = "[PAUSE] " + task_name
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, _roblox_agent_paused.wait)
+
+                # Cek stop global
+                if not NexusGlobalState.is_running:
+                    progress["stopped"] = True
+                    task_queue.task_done()
+                    return
+
+                progress["worker_status"][worker_id] = (
+                    "[" + agent_cfg.get("name", "W" + str(worker_id)) + "] "
+                    "Percobaan " + str(attempt) + " — " + task_name[:50]
+                )
+
+                # Setelah 3x gagal: ambil panduan dari GitHub
+                if attempt == 3:
+                    try:
+                        q = "roblox luau " + task_name + " " + github_context[:30]
+                        gh = await LuauKnowledgeScraper.search_github_luau(q)
+                        if gh:
+                            github_context = gh
+                    except Exception:
+                        pass
+
+                try:
+                    success, result_msg = await _execute_one_task_validated(
+                        task, agent_cfg, github_context
+                    )
+
+                    if success:
+                        progress["done"] += 1
+                        NexusGlobalState.total_tasks_done += 1
+                        progress["worker_status"][worker_id] = (
+                            "DONE (" + str(progress["done"]) + "/" + str(progress["total"]) + ") " + task_name[:40]
+                        )
+                        break  # Lanjut ke task berikutnya
+
+                    else:
+                        # Validasi gagal — jangan lanjut, retry task yang sama
+                        progress["worker_status"][worker_id] = (
+                            "[Retry " + str(attempt) + "] VALIDASI GAGAL — " + result_msg[:60]
+                        )
+                        wait = min(10 * attempt, 60)
+                        await asyncio.sleep(wait)
+
+                except asyncio.CancelledError:
+                    raise
+
+                except Exception as e:
+                    progress["worker_status"][worker_id] = (
+                        "[Retry " + str(attempt) + "] ERROR — " + str(e)[:60]
+                    )
+                    wait = min(10 * attempt, 60)
+                    await asyncio.sleep(wait)
+
+            task_queue.task_done()
+
+    # ── 6. Jalankan workers + status updater secara paralel ───────────────
+    updater_task = asyncio.create_task(status_updater())
+    try:
+        await asyncio.gather(*[worker(i) for i in range(n_workers)])
+    finally:
+        progress["stopped"] = True
+        updater_task.cancel()
+        try:
+            await updater_task
+        except asyncio.CancelledError:
+            pass
+
+    # ── 7. Build Rojo setelah semua task selesai ──────────────────────────
+    final_msg = (
+        "FLEET SELESAI!\n\n"
+        "Berhasil: " + str(progress["done"]) + "/" + str(progress["total"]) + " task\n\n"
         "Memulai Rojo build..."
     )
+    await send_fn(final_msg)
 
-    # 4. Build Rojo
     try:
         from nexus_main import RobloxDeployer
         build_ok, stderr = RobloxDeployer.compile_rojo()
         if build_ok:
-            await send_fn("Build berhasil! File .rbxl siap.")
+            await send_fn("Build berhasil! File .rbxl siap dipakai.")
         else:
             await send_fn("Build gagal:\n" + stderr[:300])
     except Exception as e:
         await send_fn("Build error: " + str(e)[:200])
 
 
-async def _execute_one_task(task: dict, extra_context: str = "") -> str:
-    """Helper untuk eksekusi satu task Roblox (dipakai oleh execute_antigravity_fleet)."""
+async def _execute_one_task_validated(
+    task: dict,
+    agent_cfg: dict,
+    extra_context: str = "",
+) -> tuple:
+    """
+    Eksekusi satu task Roblox menggunakan API key spesifik dari worker yang mengerjakan.
+
+    Wajib lulus dua lapis validasi sebelum file disimpan:
+      1. AbsoluteOmniValidator — cek keyword wajib/terlarang + aturan Luau
+      2. NativeLuauCompiler   — verifikasi AST/syntax Luau native
+
+    Return:
+      (True,  "")          jika kode lulus semua validasi dan berhasil disimpan
+      (False, error_msg)   jika validasi gagal (caller wajib retry)
+    """
     import re as _re
     from nexus_config import SOURCE_CODE_DIRECTORY as _SRC
 
@@ -2091,8 +2218,9 @@ async def _execute_one_task(task: dict, extra_context: str = "") -> str:
     folder = task.get("target_folder", "")
     detail = task.get("detail", "")
     action = task.get("action", "fix_bug")
+    task_title = task.get("title", "unknown")
 
-    # Cari file
+    # ── Tentukan path file output ────────────────────────────────────────
     file_path = None
     if hint and hint != "unknown":
         for root, dirs, files in os.walk(_SRC):
@@ -2106,32 +2234,87 @@ async def _execute_one_task(task: dict, extra_context: str = "") -> str:
             original_code = f.read()
     else:
         original_code = ""
-        safe_name = _re.sub(r"[^\w]", "_", task.get("title", "new_feature")).upper()
-        fname = safe_name + (".server.lua" if folder == "ServerScriptService" else ".client.lua" if folder in ("StarterGui", "StarterPlayerScripts") else ".lua")
+        safe_name = _re.sub(r"[^\w]", "_", task_title).upper()
+        if folder == "ServerScriptService":
+            fname = safe_name + ".server.lua"
+        elif folder in ("StarterGui", "StarterPlayerScripts", "StarterCharacterScripts"):
+            fname = safe_name + ".client.lua"
+        else:
+            fname = safe_name + ".lua"
         file_path = os.path.join(_SRC, folder, fname)
 
     code_context = original_code[:4000] if original_code else "(File baru)"
-    ctx_extra = ("KONTEKS GITHUB:\n" + extra_context) if extra_context else ""
+    ctx_extra = ("\nKONTEKS DARI GITHUB:\n" + extra_context) if extra_context else ""
 
-    prompt = (
-        "Kamu adalah senior Roblox Luau developer.\n"
-        "TUGAS: " + detail + "\n"
-        "AKSI: " + action + "\n"
-        "KODE SAAT INI:\n" + code_context + "\n"
-        + ctx_extra + "\n"
-        "ATURAN: --!strict wajib, ZIndex/DisplayOrder harus integer, HANYA output kode Luau.\n"
-        "KODE DIPERBAIKI:"
+    # ── Tentukan file type ───────────────────────────────────────────────
+    if folder == "ServerScriptService":
+        file_type = "Server Script (Script)"
+    elif folder in ("StarterGui", "StarterPlayerScripts", "StarterCharacterScripts"):
+        file_type = "Client Script (LocalScript)"
+    else:
+        file_type = "ModuleScript"
+
+    # ── Buat prompt untuk Gemini ─────────────────────────────────────────
+    sys_inst = (
+        "Kamu adalah senior Roblox Luau developer ahli.\n"
+        "Output HANYA kode Luau murni — tidak ada penjelasan, tidak ada markdown fence.\n"
+        "Baris pertama WAJIB --!strict\n"
+        "Jangan gunakan Enum untuk DisplayOrder, ZIndex, LayoutOrder (pakai integer).\n"
+        "Semua koneksi event WAJIB disimpan ke variabel (anti memory leak).\n"
+        "Operasi DataStore WAJIB dibungkus pcall()."
     )
 
-    fixed_code = await execute_gemini_cli_pure(prompt, ACTIVE_AGENTS[0]["api_key"])
-    fixed_code = extract_pure_luau_code(fixed_code)
+    prompt = (
+        "TIPE FILE: " + file_type + "\n"
+        "NAMA TUGAS: " + task_title + "\n"
+        "AKSI: " + action + "\n"
+        "DETAIL TUGAS:\n" + detail + "\n\n"
+        "KODE SAAT INI:\n" + code_context
+        + ctx_extra + "\n\n"
+        "Tulis kode " + file_type + " yang lengkap dan benar untuk task ini."
+    )
 
-    if not fixed_code:
-        raise Exception("Gemini output kosong")
+    # ── Panggil Gemini dengan API key worker ini ─────────────────────────
+    success, raw_output = await execute_gemini_cli_pure(agent_cfg, sys_inst, prompt)
 
+    if not success:
+        return False, "Gemini gagal: " + raw_output[:150]
+
+    generated_code = extract_pure_luau_code(raw_output)
+
+    if not generated_code or len(generated_code.strip()) < 10:
+        return False, "Output Gemini kosong atau terlalu pendek"
+
+    # ── Validasi Lapis 1: AbsoluteOmniValidator ──────────────────────────
+    # req_keys dan forb_keys kosong untuk task umum (validator tetap cek
+    # aturan dasar --!strict, rbxassetid, dll.)
+    omni_ok, omni_msg = AbsoluteOmniValidator.execute_validation(generated_code, [], [])
+    if not omni_ok:
+        return False, "OmniValidator gagal: " + omni_msg[:200]
+
+    # ── Validasi Lapis 2: NativeLuauCompiler AST ─────────────────────────
+    module_name = _re.sub(r"[^\w]", "_", task_title).upper()
+    ast_ok, ast_msg = await NativeLuauCompiler.execute_native_ast_verification(
+        generated_code, module_name
+    )
+    if not ast_ok:
+        return False, "AST/Syntax gagal: " + ast_msg[:200]
+
+    # ── Kedua validasi lulus → simpan file ──────────────────────────────
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, "w", encoding="utf-8") as f:
-        f.write(fixed_code)
+        f.write(generated_code)
 
-    return "OK: " + os.path.basename(file_path)
+    return True, "OK: " + os.path.basename(file_path)
+
+
+async def _execute_one_task(task: dict, extra_context: str = "") -> str:
+    """
+    Wrapper kompatibilitas backward — memanggil _execute_one_task_validated
+    dengan agent pertama. Hanya dipakai oleh execute_with_persistent_retry lama.
+    """
+    ok, msg = await _execute_one_task_validated(task, ACTIVE_AGENTS[0], extra_context)
+    if not ok:
+        raise Exception(msg)
+    return msg
 
