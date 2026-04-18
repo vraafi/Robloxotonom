@@ -1839,13 +1839,18 @@ JSON ARRAY:"""
             "-p", "Jawab secara natural dan ringkas. Bukan kode, kecuali diminta.",
         ]
 
-        FALLBACK_MODEL = "models/gemma-4-26b-a4b-it"  # Fallback, model terpisah dari Roblox
-        for attempt, model in enumerate([command[command.index("-m") + 1], FALLBACK_MODEL]):
-            if attempt == 1:
-                # Ganti model ke fallback
+        FALLBACK_MODELS = [
+            "models/gemini-3.1-flash-lite-preview",
+            "models/gemma-4-26b-a4b-it",
+            "models/gemini-2.0-flash",
+            "models/gemma-4-31b-it",
+        ]  # Fallback dari model ringan ke berat
+        for attempt, model in enumerate(FALLBACK_MODELS):
+            if attempt > 0:
+                # Ganti model ke fallback berikutnya
                 command = [
                     GEMINI_CLI_PATH,
-                    "-m", FALLBACK_MODEL,
+                    "-m", model,
                     "-y",
                     "-p", "Jawab secara natural dan ringkas. Bukan kode, kecuali diminta.",
                 ]
@@ -1859,7 +1864,7 @@ JSON ARRAY:"""
                 )
                 stdout_data, stderr_data = await asyncio.wait_for(
                     process.communicate(input=full_input.encode("utf-8")),
-                    timeout=30.0,
+                    timeout=60.0,
                 )
                 result = stdout_data.decode("utf-8", errors="replace").strip()
                 if result and not result.lower().startswith("error") and len(result) > 3:
@@ -1867,11 +1872,11 @@ JSON ARRAY:"""
                 # stdout kosong/error — coba fallback di iterasi berikut
                 continue
             except asyncio.TimeoutError:
-                if attempt == 1:
-                    return "ERROR: Timeout."
+                if attempt >= len(FALLBACK_MODELS) - 1:
+                    return "ERROR: Semua model timeout — coba lagi nanti."
                 continue
             except Exception as e:
-                if attempt == 1:
+                if attempt >= len(FALLBACK_MODELS) - 1:
                     return f"ERROR: {e}"
                 continue
         return "ERROR: Semua model gagal."
@@ -1984,10 +1989,15 @@ JSON ARRAY:"""
 
         # ── PERTANYAAN UMUM: coba Gemini, fallback jika gagal ─────────
         system_prompt = (
-            "Kamu adalah Nexus Bot — asisten AI yang ramah dan cerdas. "
-            "Jawab pertanyaan pengguna secara langsung, jelas, dan singkat (maksimal 3 kalimat). "
+            "Kamu adalah Nexus Bot — asisten AI serba bisa yang sangat cerdas dan membantu. "
+            "Kamu BISA dan WAJIB menjawab SEMUA jenis pertanyaan: pengetahuan umum, sains, teknologi, "
+            "Roblox, game development, pemrograman, sejarah, matematika, bahasa, apapun. "
+            "Jawab secara langsung, jelas, dan helpful. Gunakan format yang mudah dibaca. "
             "Gunakan bahasa yang sama dengan pengguna (Indonesia atau Inggris). "
-            "Jangan buat kode kecuali diminta. Jangan bertele-tele."
+            "JANGAN menolak pertanyaan dengan alasan apapun. "
+            "JANGAN bilang 'saya hanya bisa membantu kode' — kamu adalah asisten AI umum yang bisa segalanya. "
+            "Jika pertanyaan tentang Roblox, game, Luau, VPS, Python, atau teknologi — jawab dengan sangat detail. "
+            "Buat kode HANYA jika pengguna memintanya secara eksplisit."
         )
         try:
             # Gunakan model ringan khusus chat (gemini-3.1-flash-lite-preview)
