@@ -483,7 +483,7 @@ async def execute_gemini_cli_pure(agent: dict, system_instruction: str, prompt_p
                 "models/gemma-4-31b-it",
                 "models/gemma-4-26b-a4b-it",
                 "models/gemini-3.1-flash-lite-preview",
-                "models/gemini-2.0-flash",
+                "models/gemma-4-26b-a4b-it",
             ]
 
             last_error = ""
@@ -928,7 +928,7 @@ class AutoHealerAgent:
             success, result_data = await execute_gemini_cli_pure(agent, self.sys_inst, dynamic_prompt)
 
             if not success:
-                console_terminal_interface.print(f"[bold red]   [Aider CLI Error] {result_data[:200]}[/bold red]")
+                console_terminal_interface.print(f"[bold red]   [Gemini CLI Error] {result_data[:200]}[/bold red]")
                 return broken_code
 
             if '"mcp_tool_call"' in result_data:

@@ -42,6 +42,8 @@ from nexus_agents import (
 )
 from nexus_healer import PreDeploymentValidator
 from nexus_polyglot import start_telegram_polling
+from nexus_project_scanner import scan_existing_project, scan_deep_validate
+
 
 
 # ==============================
@@ -1541,30 +1543,33 @@ class DynamicTaskArchitect:
 def _build_task_queue():
     dynamic_tasks = [
         ("CORE_WORLD_SETTINGS", 1, "StarterPlayerScripts", "WAJIB membuat LocalScript yang mengunci kamera pemain ke First-Person (`Enum.CameraMode.LockFirstPerson`) selamanya tanpa bisa di-zoom out. Atur juga parameter gravitasi dan Lighting agar terasa seperti survival yang keras.", ["CameraMode", "LockFirstPerson"], []),
-        ("DAY_NIGHT_CYCLE", 1, "ServerScriptService", "Rancang Sistem Siklus Siang, Sore, dan Malam yang dinamis. Waktu di dalam game WAJIB berputar. Lighting harus berubah drastis (gelap gulita di malam hari). Modul ini akan memengaruhi PerceptionRadius monster.", ["Lighting", "ClockTime"], []),
-        ("WEATHER_DISASTER", 5, "ServerScriptService", "Rancang sistem cuaca ekstrem (Hujan Badai, Badai Pasir, Salju). WAJIB memengaruhi jarak pandang pemain dan memengaruhi atribut lingkungan.", [], []),
+        ("DAY_NIGHT_CYCLE", 1, "ServerScriptService", "Rancang Sistem Siklus Siang, Sore, dan Malam yang dinamis. Waktu di dalam game WAJIB berputar. Lighting harus berubah drastis (gelap gulita di malam hari). Modul ini akan memengaruhi PerceptionRadius monster. WAJIB menyertakan estetika visual langit seperti sunset, halo matahari, dan aurora di bioma bersalju.", ["Lighting", "ClockTime"], []),
+        ("WEATHER_DISASTER", 5, "ServerScriptService", "Rancang sistem cuaca ekstrem (Hujan Badai, Badai Pasir, Salju). WAJIB memengaruhi jarak pandang pemain dan memengaruhi atribut lingkungan. Contoh: Badai pasir di gurun pasir (mengurangi HP sedikit & mempersempit pandangan), Badai salju di gurun salju. Cuaca ekstrem WAJIB memengaruhi atribut/gameplay.", [], []),
         ("CORE_WORLD_GENERATION", 1, "ServerScriptService", "WAJIB membuat script Procedural Generation untuk membangun Baseplate dasar berukuran 2048x64x2048 dan meng-generate tanah/terrain. Gunakan warna PALING CERAH dan NEON. HUKUM PENEMPATAN AKURAT & BENTURAN: Semua tanah dan rintangan yang digenerate WAJIB diletakkan di permukaan menggunakan 'workspace:Raycast()', lalu diatur 'CanCollide = true' dan 'Anchored = true'.", ["Instance.new", "CanCollide", "Anchored", "Raycast", "RaycastParams"], []),
-        ("BIOME_SYSTEM", 5, "ServerScriptService", "Rancang bioma lingkungan ekstrem (Banjir, Pasir, Hutan, Snow, Ocean). Bioma ini akan dibaca oleh sistem Monster sebagai 'Habitat'. HUKUM PENEMPATAN AKURAT & BENTURAN (DEVFORUM STANDARD): Saat meng-generate Pohon atau Batu, DILARANG mengandalkan kolisi bawaan MeshPart. Anda WAJIB menggunakan teknik 'Hitbox Separation'. Anda WAJIB menembakkan sinar 'workspace:Raycast()' ke arah bawah dengan 'RaycastParams' (mode Exclude pohon lain) untuk menemukan titik permukaan tanah sebelum meletakkan Hitbox.", ["Instance.new", "CanCollide", "Anchored", "Raycast", "RaycastParams", "HitboxSeparation"], []),
+        ("BIOME_SYSTEM", 5, "ServerScriptService", "Rancang bioma lingkungan ekstrem (Banjir, Pasir, Hutan, Snow, Ocean). Bioma ini akan dibaca oleh sistem Monster sebagai 'Habitat'. HUKUM PENEMPATAN AKURAT & BENTURAN (DEVFORUM STANDARD): Saat meng-generate Pohon atau Batu, DILARANG mengandalkan kolisi bawaan MeshPart. Anda WAJIB menggunakan teknik 'Hitbox Separation'. Anda WAJIB menembakkan sinar 'workspace:Raycast()' ke arah bawah dengan 'RaycastParams' (mode Exclude pohon lain) untuk menemukan titik permukaan tanah sebelum meletakkan Hitbox. SETIAP BIOMA WAJIB BERUKURAN SEKITAR 1,300,000 x 960,000 studs (1.300 km x 960 km). Rancang ekosistem dengan ukuran raksasa ini.", ["Instance.new", "CanCollide", "Anchored", "Raycast", "RaycastParams", "HitboxSeparation"], []),
         ("RESOURCE_NODE_MANAGER", 1, "ServerScriptService", "Rancang Sistem Manajer Pohon dan Batu. HUKUM NODE: Semua Pohon dan Batu yang di-generate oleh BIOME_SYSTEM WAJIB ditambahkan 'IntValue' bernama 'Health' (misal: 100). Buat fungsi global yang mendengarkan pengurangan Health. Jika Health <= 0, hancurkan objek pohon/batu tersebut dan spawn wujud 3D 'RAW_MATERIAL_ITEM' (Kayu untuk Pohon, Besi Mentah/Batu untuk Rock) di posisi tersebut menggunakan teknik jatuh fisika ringan.", ["IntValue", "Health", "Instance.new"], []),
         ("ITEM_CATEGORY_DATABASE", 1, "ReplicatedStorage", "Rancang Database Kategori Item sentral. WAJIB membuat modul struktur data yang mendaftarkan Kategori resmi: 'Weapon', 'Ammunition', 'Armor', 'Medical', 'Material', 'Valuable', 'Bait', 'Tool'.", ["Weapon", "Ammunition", "Armor", "Bait", "Material", "Tool"], []),
         ("GATHERING_TOOLS", 2, "ServerScriptService", "Rancang ALAT PANEN: Kapak (Axe) dan Beliung (Pickaxe). HUKUM ALAT PANEN: Ini adalah 'Tool' yang bisa di-equip pemain. WAJIB menggunakan event '.Activated' dan menembakkan 'workspace:Raycast()' jarak dekat ke depan pemain. Kapak HANYA melukai objek ber-tag 'Tree'. Beliung HANYA melukai objek ber-tag 'Rock'. Kurangi nilai 'Health' (IntValue) dari objek tersebut saat dipukul. Set 'ItemCategory' = 'Tool'.", ["Tool", "Activated", "Raycast", "ItemCategory"], []),
-        ("RAW_MATERIAL_ITEM", 100, "ServerScriptService", "Rancang RAW MATERIAL / BAHAN MENTAH (Contoh: Daging, Tulang, Besi Mentah, Kayu, Ulat). HUKUM RAW MATERIAL: Karena ini bahan mentah dari alam, item ini HARAM memiliki atribut 'Recipe', 'Durability', atau 'ArmorTier'! Atur 'ItemCategory' = 'Material' (atau 'Bait' untuk Ulat). Item ini hanya boleh dijatuhkan dari Monster atau dihancurkan dari Pohon/Batu. WAJIB buat fisik 3D kecil di tanah yang bisa dipungut pemain dengan ProximityPrompt (ActionText = 'Ambil').", ["ItemCategory", "BasePrice", "ProximityPrompt"], ["Recipe", "Durability", "ArmorTier", "Weapon"]),
-        ("AMMUNITION_CALIBER", 30, "ReplicatedStorage", "Rancang modul Kaliber Peluru meniru 100% statistik Arena Breakout. HUKUM BALISTIK: Amunisi WAJIB mendefinisikan BaseDamage, PenetrationLevel (Tier 1-6). WAJIB punya wujud fisik 3D kotak amunisi dengan ProximityPrompt (ActionText='Ambil').", ["BaseDamage", "PenetrationLevel", "ItemCategory", "BasePrice", "ProximityPrompt", "Anchored"], ["Recipe", "Weapon"]),
-        ("MODERN_ARMOR_HELMET", 25, "ServerScriptService", "Rancang BARANG JADI: Helm Taktis Militer & Rompi Anti-Peluru Modern (Kevlar/Ceramic). HUKUM ARMOR MODERN: WAJIB memiliki 'Recipe' (Bahan mentah dari RAW_MATERIAL_ITEM untuk merakitnya), 'Durability' (100/100), 'ArmorTier' (1-6), dan 'MaterialType' ('Ceramic'/'Steel'). Set 'ItemCategory' = 'Armor'. HUKUM VISUAL EQUIP: Model 3D di tanah WAJIB dipasangkan 'ProximityPrompt' (ActionText='Gunakan'). Saat ditekan, Armor 3D WAJIB di-WeldConstraint ke UpperTorso karakter pemain agar terlihat jelas visualnya!", ["Recipe", "Durability", "ArmorTier", "MaterialType", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], []),
-        ("FANTASY_ARMOR_HELMET", 25, "ServerScriptService", "Rancang BARANG JADI: Jubah Penyihir & Zirah Ksatria Kuno (Fantasy Theme). HUKUM ARMOR FANTASY: Tetap WAJIB memiliki 'Recipe', 'Durability', 'ArmorTier', dan 'MaterialType' ('Leather'/'Mithril'). Set 'ItemCategory' = 'Armor'. HUKUM VISUAL EQUIP: Wujud 3D di tanah dipasangkan 'ProximityPrompt' (ActionText='Gunakan'/'Equip'). WAJIB di-weld ke badan pemain saat dipungut.", ["Recipe", "Durability", "ArmorTier", "MaterialType", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], []),
-        ("MODERN_WEAPON", 20, "ServerScriptService", "Rancang BARANG JADI: Senjata Api Modern (Assault Rifle, Sniper) meniru Arena Breakout. HUKUM MODERN WEAPON: HARAM memiliki variabel Damage! Senjata ini menembakkan peluru fisik (Raycast). WAJIB mengatur 'CompatibleCaliber' (contoh: 5.56x45mm), 'FireRate' (RPM), dan 'Recoil'. WAJIB punya 'Recipe' dan 'ItemCategory' = 'Weapon'. HUKUM VISUAL EQUIP: Pasang ProximityPrompt (Equip). WAJIB di-WeldConstraint ke tangan pemain saat dipakai.", ["Raycast", "Recipe", "CompatibleCaliber", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], ["BaseDamage"]),
-        ("FANTASY_WEAPON", 20, "ServerScriptService", "Rancang BARANG JADI: Senjata Sihir/Pedang Ksatria (Fantasy Theme). HUKUM FANTASY WEAPON: Menggunakan serangan Melee atau Tembakan Mana. WAJIB punya 'Recipe' dan 'ItemCategory' = 'Weapon'. HUKUM VISUAL EQUIP: Pasang ProximityPrompt (Equip). WAJIB di-WeldConstraint ke tangan karakter pemain.", ["Recipe", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], ["CompatibleCaliber"]),
+        ("RAW_MATERIAL_ITEM", 100, "ServerScriptService", "Rancang RAW MATERIAL / BAHAN MENTAH (Sistem Resource Tiers Albion Online). HUKUM RAW MATERIAL: Item mentah WAJIB dibuat lebih dulu karena digunakan sebagai bahan baku item jadi. Contoh bahan mudah: Kayu (Wood), Batu (Stone), Kain (Cloth). Contoh menengah: Bijih Besi (Iron Ore), Kulit (Leather), Tulang (Bone). Contoh langka: Core Monster Biasa, Core Monster Epik, Core Monster Legendaris. CONTOH KODE: local Material = { ItemCategory = 'Material', BasePrice = 50, Rarity = 'Common', DropChance = 80 }; atau Rarity='Legendary', DropChance=1. Item ini HARAM memiliki atribut 'Recipe', 'Durability', atau 'ArmorTier'! Atur 'ItemCategory' = 'Material'. WAJIB buat wujud fisik 3D di tanah dengan ProximityPrompt.", ["ItemCategory", "BasePrice", "ProximityPrompt"], ["Recipe", "Durability", "ArmorTier", "Weapon"]),
+        ("AMMUNITION_CALIBER", 30, "ReplicatedStorage", "Rancang modul Kaliber Peluru meniru 100% balistik Arena Breakout. HUKUM BALISTIK: Amunisi WAJIB mendefinisikan BaseDamage, PenetrationLevel (Tier 1-6), ArmorDamage, Velocity (untuk Bullet Drop Curve), dan BaseDrop (gravitasi spesifik peluru). CONTOH KODE: local Ammo = { Caliber='5.56x45mm', Name='M995', BaseDamage = 41, PenetrationLevel = 5, ArmorDamage = 27, Velocity = 1013, BaseDrop = 0.98, FleshDamageMultiplier = 1.0 }. Peluru Flesh/DumDum memiliki BaseDamage tinggi tapi PenetrationLevel 0. WAJIB punya wujud fisik 3D kotak amunisi dengan ProximityPrompt.", ["BaseDamage", "PenetrationLevel", "ItemCategory", "BasePrice", "ProximityPrompt", "Anchored"], ["Recipe", "Weapon"]),
+        ("MODERN_ARMOR_HELMET", 25, "ServerScriptService", "Rancang BARANG JADI: Helm Taktis Militer & Rompi Anti-Peluru Modern (Meniru Arena Breakout). HUKUM ARMOR MODERN: WAJIB memiliki 'Recipe' yang logis (Rompi Tier 6 butuh bahan Ceramic/Titanium langka). CONTOH KODE: local Recipe = {CeramicPlate = 4, Kevlar = 5}; local Durability = 80; local ArmorTier = 5; local MaterialType = 'Ceramic'; local ErgoPenalty = -5. Material memengaruhi repairability. Set 'ItemCategory' = 'Armor'. HUKUM VISUAL EQUIP: Model 3D di tanah WAJIB dipasangkan 'ProximityPrompt'. Saat ditekan, Armor 3D WAJIB di-WeldConstraint ke UpperTorso karakter pemain!", ["Recipe", "Durability", "ArmorTier", "MaterialType", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], []),
+        ("FANTASY_ARMOR_HELMET", 25, "ServerScriptService", "Rancang BARANG JADI: Jubah Penyihir & Zirah Ksatria Kuno (Fantasy Theme). HUKUM ARMOR FANTASY: Sistem armor ini terinspirasi Albion Online. WAJIB memiliki Tier (T1-T8), Quality (Masterpiece, dll). Armor kuat WAJIB pakai bahan mahal (Core Monster, Leather kualitas tinggi). Armor memiliki kekuatan pasif. CONTOH KODE: local Recipe = {Leather = 10, EpicMonsterCore = 1}; local Durability = 100; local ArmorTier = 5; local MaterialType = 'Leather'; local PassiveEffect = 'MaxHP +200'. Set 'ItemCategory' = 'Armor'. HUKUM VISUAL EQUIP: Wujud 3D di tanah dipasangkan 'ProximityPrompt'. WAJIB di-weld ke badan pemain saat dipungut.", ["Recipe", "Durability", "ArmorTier", "MaterialType", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], []),
+        ("MODERN_WEAPON", 20, "ServerScriptService", "Rancang BARANG JADI: Senjata Api Modern (Assault Rifle, Sniper) meniru Arena Breakout. HUKUM MODERN WEAPON: HARAM memiliki variabel Damage langsung! Senjata ini WAJIB menembakkan peluru fisik (Raycast/FastCast) YANG DIPENGARUHI GRAVITASI (Bullet Drop) dan WAKTU TEMPUH (Travel Time) berdasarkan Velocity peluru. Senjata kuat pakai bahan rumit (Steel, GunParts). CONTOH KODE: local Recipe = {Steel = 10, WeaponParts = 3}; local CompatibleCaliber = '5.56x45mm'; local FireRate = 600; local Ergonomics = 65; local EffectiveRange = 100; local Recoil = {Vertical = 70, Horizontal = 60}. WAJIB punya 'ItemCategory' = 'Weapon'. HUKUM VISUAL EQUIP: Pasang ProximityPrompt. WAJIB di-WeldConstraint ke tangan pemain saat dipakai.", ["Raycast", "Recipe", "CompatibleCaliber", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], ["BaseDamage"]),
+        ("FANTASY_WEAPON", 20, "ServerScriptService", "Rancang BARANG JADI: Senjata Sihir/Pedang Ksatria (Fantasy Theme). HUKUM FANTASY WEAPON: WAJIB memiliki Tier crafting (T1-T8) dan Quality (Masterpiece, dll) terinspirasi dari Albion Online. Senjata lemah menggunakan bahan mudah (Wood/Stone). Senjata kuat WAJIB menggunakan bahan langka (Core Monster Legendaris) dan MEMILIKI KEKUATAN SPESIAL (Lifesteal/Terbakar). CONTOH KODE: local Recipe = {Wood = 5, IronOre = 2, LegendaryMonsterCore = 1}; local MagicEffect = 'Lifesteal 15%'; local ItemCategory = 'Weapon'. HUKUM VISUAL EQUIP: Pasang ProximityPrompt. WAJIB di-WeldConstraint ke tangan karakter pemain.", ["Recipe", "ItemCategory", "BasePrice", "ProximityPrompt", "HitboxSeparation", "VisualEquip"], ["CompatibleCaliber"]),
         ("CORE_INVENTORY_SYSTEM", 1, "ServerScriptService", "Rancang Sistem Inventory Kustom khusus Extraction Game. DILARANG KERAS menggunakan Backpack bawaan Roblox. WAJIB membagi inventory menjadi 3 kompartemen struktur data di Server: 'MainBackpack' (Tas tempur, hilang 100% saat mati), 'SafeContainer' (Tas kecil aman saat mati), dan 'LobbyStorage' (Gudang Stash permanen di Lobby yang menampung barang beli/jual, TIDAK BISA dibawa ke arena tempur). HUKUM PERSISTENSI DATA MUTLAK: Barang di SafeContainer dan LobbyStorage TIDAK BOLEH HILANG saat pemain keluar game. WAJIB menggunakan event `Players.PlayerAdded` untuk me-load data dan `Players.PlayerRemoving` untuk me-save data ke DataStoreService dengan pcall().", ["DataStoreService", "pcall", "MainBackpack", "SafeContainer", "LobbyStorage", "PlayerRemoving", "PlayerAdded"], ["StarterGear"]),
         ("CORE_INBOX_SYSTEM", 1, "ServerScriptService", "Rancang Sistem Kotak Masuk (Inbox/Mailbox) mirip Arena Breakout. Bertindak sebagai penampung sementara dan aman untuk pemain. Data Inbox WAJIB disimpan di DataStoreService.", ["DataStoreService", "pcall", "Inbox"], []),
         ("CORE_INBOX_UI", 1, "StarterGui", "Rancang UI untuk Kotak Masuk (Inbox) dengan ikon Amplop.", ["RemoteFunction"], []),
-        ("MONSTER", 50, "ServerScriptService", "Rancang monster/hewan unik. HUKUM EKOLOGI DUNIA NYATA: WAJIB mendefinisikan 'Diet', 'SocialBehavior', 'SpawnWeight', 'Habitat', 'LocomotionType' (Terrestrial, Aerial, Aquatic), dan 'DropTable' (Jika mati, harus men-spawn wujud fisik dari RAW_MATERIAL_ITEM yang terdaftar agar pemain bisa memungutnya). HUKUM RANTAI MAKANAN: Omnivora/Karnivora WAJIB memindai radius sekitarnya untuk mencari item fisik berlabel 'Bait' untuk dimakan. HUKUM MOTORIK: Gunakan PathfindingService.", ["PathfindingService", "Humanoid", "Diet", "SocialBehavior", "SpawnWeight", "Habitat", "DropTable", "Stamina", "PerceptionRadius", "LocomotionType"], ["Motor6D", "Scavenger"]),
-        ("LOBBY_SPACESHIP", 1, "ServerScriptService", "Rancang lobby di pesawat luar angkasa besar dengan domain investor. HUKUM FISIKA LOBBY: Lobby ini BUKAN Bioma! Bangun pesawat menggunakan blok Part biasa di langit/luar angkasa (Y = 10000). DILARANG KERAS menggunakan workspace:Raycast() ke tanah karena ini di angkasa. Namun lantai/dinding pesawat WAJIB CanCollide = true dan Anchored = true.", ["Anchored", "CanCollide"], ["Raycast", "Terrain"]),
+        ("MONSTER", 50, "ServerScriptService", "Rancang monster/hewan unik. HUKUM EKOLOGI DUNIA NYATA: WAJIB mendefinisikan 'Diet', 'SocialBehavior', 'SpawnWeight', 'Habitat', 'LocomotionType' (Terrestrial, Aerial, Aquatic), dan 'DropTable' (Jika mati, harus men-spawn wujud fisik dari RAW_MATERIAL_ITEM yang terdaftar agar pemain bisa memungutnya). HUKUM RANTAI MAKANAN: Omnivora/Karnivora WAJIB memindai radius sekitarnya untuk mencari item fisik berlabel 'Bait' untuk dimakan. HUKUM MOTORIK: Gunakan PathfindingService. MUSUH HANYA MONSTER, DILARANG KERAS MENGGUNAKAN HUMANOID MANUSIA ATAU SENJATA API.", ["PathfindingService", "Humanoid", "Diet", "SocialBehavior", "SpawnWeight", "Habitat", "DropTable", "Stamina", "PerceptionRadius", "LocomotionType"], ["Motor6D", "Scavenger"]),
+        ("LOBBY_SPACESHIP", 1, "ServerScriptService", "Rancang lobby di pesawat luar angkasa besar dengan domain investor. HUKUM FISIKA LOBBY: Lobby ini BUKAN Bioma! Bangun pesawat menggunakan blok Part biasa di langit/luar angkasa (Y = 10000). DILARANG KERAS menggunakan workspace:Raycast() ke tanah karena ini di angkasa. Namun lantai/dinding pesawat WAJIB CanCollide = true dan Anchored = true. KAPAL LUAR ANGKASA INI ADALAH ZONA AMAN TEMPAT 8 NPC TRADER MANUSIA BERADA.", ["Anchored", "CanCollide"], ["Raycast", "Terrain"]),
         ("FURNITURE", 50, "ServerScriptService", "Rancang furnitur lobby pesawat. Warna wajib putih cerah atau neon. HUKUM FISIKA: Furnitur diletakkan di dalam Lobby Pesawat (Y=10000), DILARANG Raycast ke tanah bumi. Furnitur WAJIB menggunakan 'HitboxSeparation', 'CanCollide = true' (di hitbox), dan 'Anchored = true'.", ["Anchored", "CanCollide", "HitboxSeparation"], ["Raycast"]),
-        ("SMELTING_FURNACE", 1, "ServerScriptService", "Rancang Mesin Peleburan Logam (Furnace) di Lobby. HUKUM SMELTING: Mesin ini memiliki wujud fisik 3D dan 'ProximityPrompt' (ActionText='Lebur Besi'). Jika pemain membawa 'Besi Mentah' (Raw Iron) di inventory, mesin akan menghapusnya dari inventory, memutar animasi/partikel api selama beberapa detik menggunakan 'task.wait()', lalu men-spawn 'Iron Ingot' (Besi Matang) di depan mesin agar bisa dipungut pemain.", ["ProximityPrompt", "task.wait", "ParticleEmitter"], []),
-        ("NPC_TRADER", 8, "ServerScriptService", "Rancang Skrip Server 8 NPC Trader terspesialisasi: 1. Blacksmith (Dekat Furnace, jual Besi/Armor), 2. Woodworker (Jual Kayu/Kapak), 3. Stonemason (Jual Batu/Beliung), 4. Gunsmith (Jual Senjata Api/Peluru), 5. Medic (Medical), 6. Chef (Daging/Makanan), 7. Scientist (Material langka), 8. Black Market (Valuable). HUKUM NPC HIDUP: NPC DILARANG menjadi patung statis! Mereka WAJIB dipasangkan alat kerja (Palu, Gergaji, dll) di tangan mereka menggunakan `WeldConstraint`. HARGA JUAL NPC = BasePrice * 2.0. HARGA BELI DARI PEMAIN = BasePrice * 0.4.", ["Recipe", "ProximityPrompt", "BasePrice", "ItemCategory", "RemoteEvent", "WeldConstraint"], ["TakeDamage"]),
+        ("SMELTING_FURNACE", 1, "ServerScriptService", "Rancang Mesin Peleburan Logam (Furnace) di Lobby. HUKUM SMELTING: Mesin ini memiliki wujud fisik 3D dan 'ProximityPrompt' (ActionText='Lebur Besi'). Jika pemain membawa 'Besi Mentah' (Raw Iron) di inventory, mesin akan menghapusnya dari inventory, memutar animasi/partikel api selama beberapa detik menggunakan 'task.wait()', lalu men-spawn 'Iron Ingot' (Besi Matang) di depan mesin agar bisa dipungut pemain. FUNGSI BENGKEL: Pemain dapat membuat/menempa senjata dan item jadi menggunakan bahan mentah (Iron, Core Monster, dll), TETAPI WAJIB MEMBAYAR FEE (Biaya) ke NPC pemilik bengkel.", ["ProximityPrompt", "task.wait", "ParticleEmitter"], []),
+        ("NPC_TRADER", 8, "ServerScriptService", "Rancang Skrip Server 8 NPC Trader terspesialisasi: 1. Blacksmith (Dekat Furnace, jual Besi/Armor), 2. Woodworker (Jual Kayu/Kapak), 3. Stonemason (Jual Batu/Beliung), 4. Gunsmith (Jual Senjata Api/Peluru), 5. Medic (Medical), 6. Chef (Daging/Makanan), 7. Scientist (Material langka), 8. Black Market (Valuable). HUKUM NPC HIDUP: NPC DILARANG menjadi patung statis! Mereka WAJIB dipasangkan alat kerja (Palu, Gergaji, dll) di tangan mereka menggunakan `WeldConstraint`. HARGA JUAL NPC = BasePrice * 2.0. HARGA BELI DARI PEMAIN = BasePrice * 0.4. NPC TRADER WAJIB BERWUJUD MANUSIA (HANYA ADA 8 MANUSIA DI GAME INI) DAN BERADA DI KAPAL LUAR ANGKASA.", ["Recipe", "ProximityPrompt", "BasePrice", "ItemCategory", "RemoteEvent", "WeldConstraint"], ["TakeDamage"]),
         ("NPC_SHOP_UI", 1, "StarterGui", "Rancang UI Katalog Belanja untuk NPC Trader.", ["RemoteEvent", "RemoteFunction"], []),
         ("FLEA_MARKET_BACKEND", 1, "ServerScriptService", "Rancang Backend Server Keamanan untuk Pasar Loak (Shopee pemain) menggunakan pcall.", ["RemoteFunction", "DataStoreService", "pcall", "Inbox"], []),
         ("PLAYER_FLEA_MARKET_UI", 1, "StarterGui", "Rancang UI Pasar Loak (Flea Market / Shopee antar pemain).", ["ItemCategory", "TextBox", "RemoteFunction"], []),
+        ("HEALTH_AND_WOUND_SYSTEM", 1, "ServerScriptService", "Rancang Sistem Kesehatan mirip Arena Breakout. WAJIB membagi HP menjadi spesifik bagian tubuh: Head (35), Thorax (85), Stomach (70), LeftArm (60), RightArm (60), LeftLeg (65), RightLeg (65). Jika Head/Thorax mencapai 0, pemain langsung mati. Bagian lain yang 0 akan menyebabkan status 'Broken' (Patah Tulang, efek layar hitam/kabur & lambat berjalan). Tambahkan sistem status 'Bleeding' (Pendarahan) yang terus mengurangi HP.", ["Humanoid", "Head", "Thorax", "Stomach", "Bleeding", "Broken", "Pain"], []),
+        ("MEDICAL_ITEM_SYSTEM", 10, "ServerScriptService", "Rancang Sistem Item Medis penyembuh (Bandage, Surgical Kit, Medkit, Painkiller, Potion/Food) meniru Arena Breakout & Albion Online. HUKUM MEDIS: 'Bandage' hanya menyembuhkan status 'Bleeding'. 'Surgical Kit' hanya menyembuhkan status 'Broken' pada anggota tubuh tertentu (misal kaki yang patah). 'Medkit' menambah HP murni pada bagian tubuh tertentu. 'Potion/Food' memberikan regenerasi HP pelan/Stamina (Albion style). CONTOH KODE: local Medical = { ItemCategory = 'Medical', HealTarget = 'Bleeding', UseTime = 3, Charges = 4 }. WAJIB menggunakan 'ProximityPrompt' untuk item fisik di tanah.", ["ItemCategory", "HealTarget", "UseTime", "Charges", "ProximityPrompt"], []),
+        ("DYNAMIC_HUD_INTERFACE", 1, "StarterGui", "Rancang UI HUD (Heads-Up Display) dan Control Layout meniru 100% Arena Breakout Mobile. HUKUM HUD FPS: WAJIB berisi tombol aksi lengkap (Tembak Kiri/Kanan, Scope/ADS, Lompat, Jongkok, Tiarap, Reload, Buka Tas, Medis, Miring Kanan/Kiri). WAJIB ada indikator HP per-anggota tubuh (Head, Thorax, Limbs), Minimap, dan jumlah Amunisi. HUKUM KUSTOMISASI KONTROL: WAJIB ada menu 'Customize Layout' dimana pemain bisa menyeret (Drag), mengubah ukuran (Resize), dan mengatur Transparansi (Opacity) semua tombol tersebut dan menyimpannya. WAJIB sediakan preset tata letak (Thumb Setup 2 Jari, 3 Finger Claw, 4 Finger Claw, 5 Finger Claw).", ["ScreenGui", "TextButton", "ImageButton", "UIListLayout", "UIPadding"], []),
         ("CORE_MISSION_SYSTEM", 1, "ServerScriptService", "Rancang Sistem Misi Harian dan Event Mingguan (Quest System).", ["Inbox", "Mission"], []),
         ("CORE_MISSION_UI", 1, "StarterGui", "Rancang UI Daftar Misi mendengarkan RemoteEvent.", ["RemoteEvent"], []),
         ("CORE_MONETIZATION_SYSTEM", 1, "ServerScriptService", "Rancang sistem monetisasi sentral. HUKUM ANTI-P2W MUTLAK: `MarketplaceService.ProcessReceipt` HANYA BOLEH dideklarasikan di SATU skrip ini.", ["MarketplaceService", "ProcessReceipt", "DataStoreService", "pcall"], ["Sword", "Gun", "Armor", "Weapon"]),
@@ -1959,8 +1964,54 @@ async def _run_task_parallel(
 
     return (False, task_name, prev_err[:120])
 
+
+async def nexus_startup_sequence():
+    """
+    Jalankan saat sistem pertama kali dinyalakan.
+    Scan mendalam isi semua file Lua — bukan hanya nama.
+    """
+    console_terminal_interface.print("[bold green]Nexus AI v2.0 Startup Sequence...[/bold green]")
+
+    # Scan mendalam + auto-fix
+    validate_result = await scan_deep_validate(auto_fix=True)
+
+    console_terminal_interface.print(
+        f"[bold cyan]Startup Scan Selesai:[/bold cyan]\n"
+        f"  Total: {validate_result['total']} file\n"
+        f"  Valid: {validate_result['valid']} file\n"
+        f"  Auto-fix: {validate_result['fixed']} file\n"
+        f"  Perlu AI: {len(validate_result['need_ai'])} file"
+    )
+
+    if validate_result["need_ai"]:
+        console_terminal_interface.print("[bold yellow]File yang perlu perbaikan AI:[/bold yellow]")
+        for item in validate_result["need_ai"][:5]:
+            console_terminal_interface.print(f"  - {item['file']}: {', '.join(item['issues'])}")
+
+    # Notif ke Telegram
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            msg = (
+                "Nexus AI Agent v2.0 Menyala!\n\n"
+                "Startup Scan Selesai:\n"
+                "Total: " + str(validate_result["total"]) + " file Lua\n"
+                "Auto-fix: " + str(validate_result["fixed"]) + " file\n"
+                "Perlu AI fix: " + str(len(validate_result["need_ai"])) + " file\n\n"
+                + ("Kirim /autofix untuk perbaiki file yang butuh AI." if validate_result["need_ai"] else "Semua file valid! Agent siap.")
+            )
+            if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+                await session.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                )
+    except Exception as e:
+        console_terminal_interface.print(f"[yellow]Notif Telegram gagal: {e}[/yellow]")
+
 async def run_orchestrator():
     try:
+        await nexus_startup_sequence()
         await initialize_system_ledger()
         setup_rojo()
         NativeLuauCompiler.ensure_compiler_exists()
@@ -2221,59 +2272,3 @@ if __name__ == "__main__":
     except SystemExit:
         pass
         
-# ============================================================
-# PATCH UNTUK nexus_main.py
-# Cari fungsi main() atau bagian startup, tambahkan kode ini
-# ============================================================
-
-# 1. Di bagian IMPORT atas, pastikan ada:
-from nexus_project_scanner import scan_existing_project, scan_deep_validate
-
-# 2. Di dalam fungsi startup / main(), SEBELUM loop utama dimulai:
-async def nexus_startup_sequence():
-    """
-    Jalankan saat sistem pertama kali dinyalakan.
-    Scan mendalam isi semua file Lua — bukan hanya nama.
-    """
-    console_terminal_interface.print("[bold green]Nexus AI v2.0 Startup Sequence...[/bold green]")
-
-    # Scan mendalam + auto-fix
-    validate_result = await scan_deep_validate(auto_fix=True)
-
-    console_terminal_interface.print(
-        f"[bold cyan]Startup Scan Selesai:[/bold cyan]\n"
-        f"  Total: {validate_result['total']} file\n"
-        f"  Valid: {validate_result['valid']} file\n"
-        f"  Auto-fix: {validate_result['fixed']} file\n"
-        f"  Perlu AI: {len(validate_result['need_ai'])} file"
-    )
-
-    if validate_result["need_ai"]:
-        console_terminal_interface.print("[bold yellow]File yang perlu perbaikan AI:[/bold yellow]")
-        for item in validate_result["need_ai"][:5]:
-            console_terminal_interface.print(f"  - {item['file']}: {', '.join(item['issues'])}")
-
-    # Notif ke Telegram
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            msg = (
-                "Nexus AI Agent v2.0 Menyala!\n\n"
-                "Startup Scan Selesai:\n"
-                "Total: " + str(validate_result["total"]) + " file Lua\n"
-                "Auto-fix: " + str(validate_result["fixed"]) + " file\n"
-                "Perlu AI fix: " + str(len(validate_result["need_ai"])) + " file\n\n"
-                + ("Kirim /autofix untuk perbaiki file yang butuh AI." if validate_result["need_ai"] else "Semua file valid! Agent siap.")
-            )
-            await session.post(
-                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
-                timeout=aiohttp.ClientTimeout(total=30),
-            )
-    except Exception as e:
-        console_terminal_interface.print(f"[yellow]Notif Telegram gagal: {e}[/yellow]")
-
-
-# _roblox_agent_paused diimport dari nexus_agents (sumber kebenaran tunggal)
-# Tidak perlu import ulang dari nexus_telegram_bot (circular import)
-

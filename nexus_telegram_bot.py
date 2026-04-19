@@ -94,16 +94,23 @@ _RATE_LIMIT_MAX = 30
 _user_message_timestamps: dict = defaultdict(list)
 
 MODEL_FALLBACK_SEQUENCE = [
-    "gemini-2.0-flash",
-    "gemma-4-31b-it",
-    "gemma-4-26b-a4b-it",
-    "gemma-3-27b-it",
-    "gemini-3.1-flash-lite-preview",
-    "gemma-3-12b-it",
-    "gemma-3-4b-it",
-    "gemma-3n-e4b-it",
-    "gemma-3n-e2b-it",
-    "gemma-3-1b-it",
+    "models/gemma-4-31b-it",
+    "models/gemma-4-26b-a4b-it",
+    "models/gemma-3-27b-it",
+    "models/gemini-3.1-flash-lite-preview",
+    "models/gemma-3-12b-it",
+    "models/gemma-3-4b-it",
+    "models/gemma-3n-e4b-it",
+    "models/gemma-3n-e2b-it",
+    "models/gemma-3-1b-it",
+
+
+
+
+
+
+
+
 ]
 
 
@@ -185,7 +192,7 @@ async def _safe_send(bot, chat_id: str, text: str, reply_markup=None) -> Optiona
 # ================================================
 # GEMINI CLI — TIDAK PERNAH MENOLAK, SELALU RETRY
 # ================================================
-def _call_gemini_sync(prompt: str, api_key: str, model: str = "gemini-2.0-flash") -> str:
+def _call_gemini_sync(prompt: str, api_key: str, model: str = "models/gemma-4-31b-it") -> str:
     env = os.environ.copy()
     env["GEMINI_API_KEY"] = api_key
     env["CI"] = "true"
