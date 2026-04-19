@@ -68,6 +68,13 @@ from nexus_agents import (
     _roblox_agent_paused,
 )
 
+from nexus_database import (
+    save_user_session,
+    load_user_session,
+    delete_user_session,
+    initialize_session_table,
+)
+
 
 # ================================================
 # KONSTANTA & STATE GLOBAL
@@ -521,6 +528,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Bot ini pribadi. Akses ditolak.")
         return
 
+    # Inisialisasi tabel sesi jika belum ada
+    await initialize_session_table()
+    
+    # Muat riwayat sesi dari database
+    history = await load_user_session(chat_id)
+    if history:
+        global_agent_memory._history = history
+        await update.message.reply_text("🔄 Sesi sebelumnya dipulihkan dari database.")
+
     paused = not _roblox_agent_paused.is_set()
     bg_running = _roblox_background_task and not _roblox_background_task.done()
 
@@ -589,6 +605,27 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if chat_id != _OWNER_CHAT_ID:
         return
     await _send_status(update.message.reply_text)
+
+
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = str(update.effective_chat.id)
+    if chat_id != _OWNER_CHAT_ID:
+        return
+    
+    # Hapus memori di RAM
+    global_agent_memory.clear()
+    
+    # Hapus sesi di Database
+    await delete_user_session(chat_id)
+    
+    # Hapus cache fisik (temp io)
+    from nexus_config import TEMP_IO_DIRECTORY
+    if os.path.exists(TEMP_IO_DIRECTORY):
+        import shutil
+        shutil.rmtree(TEMP_IO_DIRECTORY, ignore_errors=True)
+        os.makedirs(TEMP_IO_DIRECTORY, exist_ok=True)
+        
+    await update.message.reply_text("🧹 Semua riwayat percakapan, sesi database, dan cache data telah dihapus.")
 
 
 async def _send_status(reply_fn):

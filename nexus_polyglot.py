@@ -639,10 +639,12 @@ class PolyglotSynthesizerAgent:
             last_stderr = ""
             success = False
 
-            for attempt in range(1, MAX_AUTO_HEAL_ATTEMPTS + 1):
+            attempt = 0
+            while True:
+                attempt += 1
                 await send_fn(
                     f"Sandbox Execution (Ronde {round_number}, "
-                    f"Percobaan {attempt}/{MAX_AUTO_HEAL_ATTEMPTS})..."
+                    f"Percobaan {attempt})..."
                 )
 
                 loop = asyncio.get_running_loop()
@@ -668,7 +670,7 @@ class PolyglotSynthesizerAgent:
                     final_msg = (
                         f"<b>[NEXUS POLYGLOT] BERHASIL!</b>\n\n"
                         f"Ronde: <code>{round_number}</code> | "
-                        f"Percobaan: <code>{attempt}/{MAX_AUTO_HEAL_ATTEMPTS}</code>\n"
+                        f"Percobaan: <code>{attempt}</code>\n"
                         f"Bahasa: <code>{language.upper()}</code>\n"
                         f"Sandbox: <code>{task_id[:8]}</code> (PERSISTEN - tidak dihapus)\n\n"
                         f"<b>Output:</b>\n<pre>{out_preview}</pre>\n\n"
@@ -679,29 +681,39 @@ class PolyglotSynthesizerAgent:
                     success = True
                     break
 
-                # Gagal — Auto-Heal
+                # Gagal — Auto-Heal (Infinity Retry)
                 last_stderr = stderr
-                if attempt < MAX_AUTO_HEAL_ATTEMPTS:
-                    err_preview = stderr[:300] if stderr else "Unknown error"
+                err_preview = stderr[:300] if stderr else "Unknown error"
+                
+                # Jika sudah 5x gagal, beri jeda dan tawarkan intervensi tapi tetap lanjut
+                if attempt % 5 == 0:
                     await send_fn(
-                        f"Error (Percobaan {attempt}). Auto-Heal...\n"
-                        f"<pre>{err_preview}</pre>"
+                        f"⚠️ <b>Sudah {attempt}x percobaan gagal.</b>\n"
+                        f"Error: <code>{err_preview}</code>\n\n"
+                        f"AI akan terus mencoba memperbaiki secara otonom (Infinity Retry AKTIF)."
                     )
+                    # Pemicu untuk keluar dari loop auto-heal internal dan minta instruksi di loop ronde
+                    break
 
-                    heal_prompt = (
-                        f"Kode {language.upper()} ini GAGAL:\n"
-                        f"[ERROR]:\n{stderr[:800]}\n\n"
-                        f"[KODE GAGAL]:\n{code}\n\n"
-                        f"[TASK]:\n{task_desc}\n\n"
-                        f"Perbaiki SEMUA error. Output HANYA kode murni."
+                await send_fn(
+                    f"Error (Percobaan {attempt}). Auto-Heal...\n"
+                    f"<pre>{err_preview}</pre>"
+                )
+
+                heal_prompt = (
+                    f"Kode {language.upper()} ini GAGAL:\n"
+                    f"[ERROR]:\n{stderr[:800]}\n\n"
+                    f"[KODE GAGAL]:\n{code}\n\n"
+                    f"[TASK]:\n{task_desc}\n\n"
+                    f"Perbaiki SEMUA error. Output HANYA kode murni."
+                )
+                async with POLYGLOT_CLI_SEMAPHORE:
+                    code = await self._call_gemini(
+                        f"Ahli debug {language.upper()} senior. Output kode murni saja.",
+                        heal_prompt,
                     )
-                    async with POLYGLOT_CLI_SEMAPHORE:
-                        code = await self._call_gemini(
-                            f"Ahli debug {language.upper()} senior. Output kode murni saja.",
-                            heal_prompt,
-                        )
-                    if not code or code.startswith("ERROR"):
-                        break
+                if not code or code.startswith("ERROR"):
+                    break
 
             if success:
                 return "success"

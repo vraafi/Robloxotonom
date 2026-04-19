@@ -2075,7 +2075,7 @@ async def execute_antigravity_fleet(
         )
 
     # ── 2. Analisis laporan → daftar task (Alur Terstruktur) ───────────────
-    await send_fn("Menganalisis laporan & Membuat Daftar Tugas...")
+    await send_fn("🔍 Menganalisis laporan & Menyusun Daftar Tugas (Google Antigravity Mode)...")
 
     try:
         fleet_leader = OmniSynthesizerAgent(
@@ -2083,27 +2083,38 @@ async def execute_antigravity_fleet(
             api_key=ACTIVE_AGENTS[0]["api_key"],
         )
         tasks = await fleet_leader.analyze_user_report(user_report, project_context)
+        
+        # Pastikan tugas mencakup poin-poin yang diminta pengguna jika relevan
+        if not tasks:
+            raise Exception("Gagal menghasilkan daftar tugas.")
+            
     except Exception as e:
-        tasks = [{
-            "id": 1,
-            "title": "Perbaiki masalah yang dilaporkan",
-            "target_folder": "StarterGui",
-            "target_file_hint": "unknown",
-            "action": "fix_bug",
-            "priority": "high",
-            "detail": user_report,
-        }]
+        # Fallback ke daftar tugas terstruktur sesuai permintaan pengguna
+        tasks = [
+            {"id": 1, "title": f"Membaca repository github https://github.com/vraafi/Robloxotonom", "detail": "Analisis struktur dan kode sumber repositori.", "status": "pending"},
+            {"id": 2, "title": "Mencari solusi dan memberikan solusi dari kasus pengguna", "detail": user_report, "status": "pending"},
+            {"id": 3, "title": "Menyimpulkan dan memperbaiki/menambahkan logika fitur", "detail": "Integrasi solusi ke dalam project.", "status": "pending"},
+            {"id": 4, "title": "Memberikan instruksi token akses atau hasil akhir", "detail": "Finalisasi dan serah terima.", "status": "pending"}
+        ]
 
-    # Format Daftar Tugas untuk Pengguna
-    task_list_str = "📋 **DAFTAR TUGAS NEXUS AGENT**\n"
-    task_list_str += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    for i, t in enumerate(tasks, 1):
-        task_list_str += f"{i}. {t.get('title', 'Tugas Tanpa Judul')}\n"
-    task_list_str += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    task_list_str += f"⚡ Status: Memulai eksekusi dengan {n_workers} worker (Infinity Retry AKTIF)\n"
-    
-    await send_fn(task_list_str)
-    await asyncio.sleep(3) # Beri waktu pengguna membaca daftar tugas
+    def _generate_antigravity_display(current_tasks, done_count, total_count):
+        display = "🚀 **NEXUS ANTIGRAVITY TASK LIST**\n"
+        display += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        for i, t in enumerate(current_tasks, 1):
+            status_icon = "⏳"
+            if t.get("status") == "completed": status_icon = "✅"
+            elif t.get("status") == "running": status_icon = "🔄"
+            elif t.get("status") == "failed": status_icon = "❌"
+            
+            display += f"{i}. {status_icon} {t.get('title', 'Tugas ' + str(i))}\n"
+            if t.get("status") == "running":
+                display += f"   └─ ⚡ *Sedang dikerjakan...*\n"
+        display += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        display += f"📊 Progress: {done_count}/{total_count} Selesai | ♾️ Infinity Retry: AKTIF\n"
+        return display
+
+    await send_fn(_generate_antigravity_display(tasks, 0, len(tasks)))
+    await asyncio.sleep(3)
 
     progress["total"] = len(tasks)
 
@@ -2182,20 +2193,26 @@ async def execute_antigravity_fleet(
                         pass
 
                 try:
+                    task["status"] = "running"
+                    await send_fn(_generate_antigravity_display(tasks, progress["done"], progress["total"]))
+                    
                     success, result_msg = await _execute_one_task_validated(
                         task, agent_cfg, github_context
                     )
 
                     if success:
+                        task["status"] = "completed"
                         progress["done"] += 1
                         NexusGlobalState.total_tasks_done += 1
                         progress["worker_status"][worker_id] = (
                             "DONE (" + str(progress["done"]) + "/" + str(progress["total"]) + ") " + task_name[:40]
                         )
+                        await send_fn(_generate_antigravity_display(tasks, progress["done"], progress["total"]))
                         break  # Lanjut ke task berikutnya
 
                     else:
                         # Validasi gagal — jangan lanjut, retry task yang sama
+                        task["status"] = "failed"
                         progress["worker_status"][worker_id] = (
                             "[Retry " + str(attempt) + "] VALIDASI GAGAL — " + result_msg[:60]
                         )

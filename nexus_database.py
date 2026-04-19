@@ -209,3 +209,56 @@ async def get_daily_log_amount(player_id: str) -> int:
             conn.close()
             return result[0] if result else 0
         return await asyncio.to_thread(_get)
+
+async def initialize_session_table():
+    async with DATABASE_MUTEX:
+        def _init():
+            conn = establish_database_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_sessions (
+                    chat_id TEXT PRIMARY KEY,
+                    history_json TEXT,
+                    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+            conn.close()
+        await asyncio.to_thread(_init)
+
+
+async def save_user_session(chat_id: str, history: list):
+    async with DATABASE_MUTEX:
+        def _save():
+            conn = establish_database_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO user_sessions (chat_id, history_json, last_updated)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            ''', (str(chat_id), json.dumps(history)))
+            conn.commit()
+            conn.close()
+        await asyncio.to_thread(_save)
+
+
+async def load_user_session(chat_id: str) -> list:
+    async with DATABASE_MUTEX:
+        def _load():
+            conn = establish_database_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT history_json FROM user_sessions WHERE chat_id = ?', (str(chat_id),))
+            row = cursor.fetchone()
+            conn.close()
+            return json.loads(row[0]) if row else []
+        return await asyncio.to_thread(_load)
+
+
+async def delete_user_session(chat_id: str):
+    async with DATABASE_MUTEX:
+        def _delete():
+            conn = establish_database_connection()
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM user_sessions WHERE chat_id = ?', (str(chat_id),))
+            conn.commit()
+            conn.close()
+        await asyncio.to_thread(_delete)
