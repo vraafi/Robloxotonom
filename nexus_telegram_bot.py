@@ -792,20 +792,6 @@ async def cmd_autofix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
-async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = str(update.effective_chat.id)
-    if chat_id != _OWNER_CHAT_ID:
-        return
-    # Membersihkan state dan memori agent secara permanen
-    _user_state.pop(chat_id, None)
-    global_agent_memory.clear()
-    await update.message.reply_text(
-        "Sesi, histori percakapan, dan cache memori telah DIBERSIHKAN TOTAL.\n"
-        "Kirim /start untuk memulai sesi baru.",
-        reply_markup=_main_menu_keyboard(),
-    )
-
-
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     if chat_id != _OWNER_CHAT_ID:

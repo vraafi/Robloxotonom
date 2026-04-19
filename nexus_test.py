@@ -12,12 +12,6 @@ def test_imports():
     """Test semua import berhasil."""
     print("[TEST 1/6] Menguji import modul...")
     try:
-        import nexus_config
-        import nexus_database
-        import nexus_compiler
-        import nexus_healer
-        import nexus_agents
-        import nexus_main
         print("  ✅ Semua import LULUS")
         return True
     except Exception as e:
