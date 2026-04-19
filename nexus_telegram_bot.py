@@ -23,13 +23,11 @@ Perbaikan v3.0.0:
 
 import os
 import re
-import json
 import asyncio
 import subprocess
 import time
 import shutil
 import tempfile
-import threading
 from collections import defaultdict
 from typing import Optional
 
@@ -47,7 +45,6 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from telegram.constants import ParseMode
 from telegram.error import BadRequest, RetryAfter, TimedOut
 
 from nexus_config import (
@@ -57,7 +54,6 @@ from nexus_config import (
     GEMINI_CLI_PATH,
     PROJECT_ROOT_DIRECTORY,
     SOURCE_CODE_DIRECTORY,
-    COMPILED_GAME_FILE,
     console_terminal_interface,
 )
 
@@ -69,7 +65,6 @@ from nexus_agents import (
 )
 
 from nexus_database import (
-    save_user_session,
     load_user_session,
     delete_user_session,
     initialize_session_table,

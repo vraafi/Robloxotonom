@@ -1,0 +1,17 @@
+
+============================================================
+🚀 NEXUS STABILITY TEST - 15 MENIT
+============================================================
+
+[TEST 1/6] Menguji import modul...
+  ✅ Semua import LULUS
+[TEST 2/6] Menguji konfigurasi...
+✅ 1 Agent aktif terdeteksi.
+Gemini CLI Path: gemini
+⚠️ ROBLOX_MCP_URL kosong. Mode otonom buta (Tanpa Studio Live Playtest).
+  ✅ 1 agent aktif
+  ✅ Universe ID: 0
+  ✅ Place ID: 0
+  ✅ API Key: Kosong
+[TEST 3/6] Menguji database SQLite...
+Database Ledger diinisialisasi dengan WAL Mode.
