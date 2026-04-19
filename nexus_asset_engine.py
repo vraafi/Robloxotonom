@@ -856,6 +856,49 @@ class AssetOrchestrator:
               → validasi XML → tes remodel → upload (khusus MESH).
     """
 
+
+
+    @staticmethod
+    def _download_and_convert_mesh(asset_id: str) -> str:
+        """
+        Mendownload mesh biner Roblox secara otomatis lalu mengubahnya ke OBJ.
+        Kembalikan string isi OBJ, atau string kosong jika gagal.
+        """
+        import subprocess
+        import os
+
+        # Eksekusi URL endpoint Roblox
+        url = f"https://assetdelivery.roblox.com/v1/asset?id={asset_id}"
+        mesh_path = f"/tmp/{asset_id}.mesh"
+        obj_path = f"/tmp/{asset_id}.obj"
+
+        try:
+            # 1. Download file biner .mesh
+            subprocess.run([
+                "curl", "-s", "--location", "--request", "GET", url,
+                "--header", "User-Agent: Roblox/WinInet",
+                "--header", "Accept: application/json",
+                "--output", mesh_path
+            ], check=True, timeout=15)
+
+            # 2. Jika tool rbx-mesh-to-obj ada, kita jalankan, kalau tidak fallback placeholder
+            if os.path.exists("./rbx-mesh-to-obj") and os.access("./rbx-mesh-to-obj", os.X_OK):
+                subprocess.run(["./rbx-mesh-to-obj", mesh_path, obj_path], check=True, timeout=15)
+                if os.path.exists(obj_path):
+                    with open(obj_path, "r", encoding="utf-8", errors="ignore") as fobj:
+                        obj_data = fobj.read()
+                    return obj_data
+            else:
+                # Mock response - jika script tidak punya binary pihak ketiga
+                print(f"[Asset Engine] Tool ./rbx-mesh-to-obj tidak ditemukan! Simulasi konversi mesh ID {asset_id}")
+                pass
+
+        except Exception as e:
+            print(f"[Asset Engine] Gagal mengunduh/konversi mesh {asset_id}: {e}")
+            pass
+
+        return ""
+
     @classmethod
     async def process_asset_task(
         cls,
@@ -995,8 +1038,27 @@ class AssetOrchestrator:
     # ── Internal: Handle MESH task ──────────────────────────────────────────
     @classmethod
     async def _handle_mesh(cls, task_name: str, description: str, obj_path: str) -> Tuple[bool, str, str]:
-        # Jika output AI sudah berupa OBJ valid, gunakan langsung
         stripped = description.strip()
+
+        # ── DETEKSI ASSET ID MESH OTOMATIS ──
+        # Jika AI mengirimkan Asset ID, unduh otonom tanpa henti
+        import re
+        asset_id_match = re.search(r"rbxassetid://(\\d+)|(\\d{8,})", stripped)
+        if asset_id_match:
+            asset_id = asset_id_match.group(1) or asset_id_match.group(2)
+            console_terminal_interface.print(f"  [Asset Engine] [bold cyan]Mendeteksi Asset ID {asset_id}. Mengeksekusi pengunduhan .mesh otomatis...[/bold cyan]")
+
+            downloaded_obj = cls._download_and_convert_mesh(asset_id)
+            if downloaded_obj and "v " in downloaded_obj and "f " in downloaded_obj:
+                with open(obj_path, "w", encoding="utf-8") as f:
+                    f.write(downloaded_obj)
+                val_ok, val_msg = AssetTestValidator.validate_obj(obj_path)
+                if val_ok:
+                    return True, obj_path, f"Unduh otomatis Mesh ID {asset_id} Lulus"
+            else:
+                console_terminal_interface.print(f"  [Asset Engine] [yellow]Gagal mengonversi Mesh ID {asset_id}. Memakai Placeholder.[/yellow]")
+
+        # Jika output AI sudah berupa OBJ valid, gunakan langsung
         if stripped.startswith("v ") and "f " in stripped:
             with open(obj_path, "w", encoding="utf-8") as f:
                 f.write(description)

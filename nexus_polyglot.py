@@ -1362,7 +1362,7 @@ JSON ARRAY:"""
             env["TERM"] = "dumb"
             try:
                 r = subprocess.run(
-                    [GEMINI_CLI_PATH, "-m", "models/gemini-2.0-flash", "-y", "-p", prompt],
+                    [GEMINI_CLI_PATH, "-m", "models/gemma-4-31b-it", "-y", "-p", prompt],
                     env=env, capture_output=True, text=True, timeout=150,
                 )
                 return r.stdout.strip()
@@ -1637,7 +1637,7 @@ JSON ARRAY:"""
             def _gen():
                 try:
                     r = subprocess.run(
-                        [GEMINI_CLI_PATH, "-m", "models/gemini-2.0-flash", "-y", "-p", prompt],
+                        [GEMINI_CLI_PATH, "-m", "models/gemma-4-31b-it", "-y", "-p", prompt],
                         env=env, capture_output=True, text=True, timeout=180,
                     )
                     return r.stdout.strip()
@@ -1846,17 +1846,22 @@ JSON ARRAY:"""
         full_input = f"[SYSTEM]:\n{system_prompt}\n\n[USER]:\n{user_text}"
         command = [
             GEMINI_CLI_PATH,
-            "-m", "models/gemini-3.1-flash-lite-preview",
+            "-m", "models/gemma-3-27b-it",
             "-y",
             "-p", "Jawab secara natural dan ringkas. Bukan kode, kecuali diminta.",
         ]
 
         FALLBACK_MODELS = [
-            "models/gemini-3.1-flash-lite-preview",
-            "models/gemma-4-26b-a4b-it",
-            "models/gemini-2.0-flash",
             "models/gemma-4-31b-it",
-        ]  # Fallback dari model ringan ke berat
+            "models/gemma-4-26b-a4b-it",
+            "models/gemma-3-27b-it",
+            "models/gemini-3.1-flash-lite-preview",
+            "models/gemma-3-12b-it",
+            "models/gemma-3-4b-it",
+            "models/gemma-3n-e4b-it",
+            "models/gemma-3n-e2b-it",
+            "models/gemma-3-1b-it",
+        ]  # Fallback berurutan
         for attempt, model in enumerate(FALLBACK_MODELS):
             if attempt > 0:
                 # Ganti model ke fallback berikutnya

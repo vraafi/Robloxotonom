@@ -94,16 +94,23 @@ _RATE_LIMIT_MAX = 30
 _user_message_timestamps: dict = defaultdict(list)
 
 MODEL_FALLBACK_SEQUENCE = [
-    "gemini-2.0-flash",
-    "gemma-4-31b-it",
-    "gemma-4-26b-a4b-it",
-    "gemma-3-27b-it",
-    "gemini-3.1-flash-lite-preview",
-    "gemma-3-12b-it",
-    "gemma-3-4b-it",
-    "gemma-3n-e4b-it",
-    "gemma-3n-e2b-it",
-    "gemma-3-1b-it",
+    "models/gemma-4-31b-it",
+    "models/gemma-4-26b-a4b-it",
+    "models/gemma-3-27b-it",
+    "models/gemini-3.1-flash-lite-preview",
+    "models/gemma-3-12b-it",
+    "models/gemma-3-4b-it",
+    "models/gemma-3n-e4b-it",
+    "models/gemma-3n-e2b-it",
+    "models/gemma-3-1b-it",
+
+
+
+
+
+
+
+
 ]
 
 
@@ -185,7 +192,7 @@ async def _safe_send(bot, chat_id: str, text: str, reply_markup=None) -> Optiona
 # ================================================
 # GEMINI CLI — TIDAK PERNAH MENOLAK, SELALU RETRY
 # ================================================
-def _call_gemini_sync(prompt: str, api_key: str, model: str = "gemini-2.0-flash") -> str:
+def _call_gemini_sync(prompt: str, api_key: str, model: str = "models/gemma-4-31b-it") -> str:
     env = os.environ.copy()
     env["GEMINI_API_KEY"] = api_key
     env["CI"] = "true"
@@ -789,20 +796,6 @@ async def cmd_autofix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "Diperbaiki: " + str(fixed_count) + "/" + str(len(violations)) + " file\n"
         "Jalankan build ulang untuk memverifikasi.",
         reply_markup=_control_keyboard(),
-    )
-
-
-async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = str(update.effective_chat.id)
-    if chat_id != _OWNER_CHAT_ID:
-        return
-    # Membersihkan state dan memori agent secara permanen
-    _user_state.pop(chat_id, None)
-    global_agent_memory.clear()
-    await update.message.reply_text(
-        "Sesi, histori percakapan, dan cache memori telah DIBERSIHKAN TOTAL.\n"
-        "Kirim /start untuk memulai sesi baru.",
-        reply_markup=_main_menu_keyboard(),
     )
 
 
