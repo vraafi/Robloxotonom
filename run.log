@@ -1,0 +1,68 @@
+[Sistem] Menjalankan Nexus Healing Agent di background...
+[Sistem] Menjalankan Nexus Main Orchestrator di foreground...
+[Sistem] Telegram Bot sudah terintegrasi dalam nexus_main.py
+✅ 1 Agent aktif terdeteksi.
+Gemini CLI Path: gemini
+⚠️ ROBLOX_MCP_URL kosong. Mode otonom buta (Tanpa Studio Live Playtest).
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ NEXUS TIER ABSOLUTE APEX - SELF-HEALING AUTONOMOUS AGENT INITIALIZING...     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+Nexus AI v2.0 Startup Sequence...
+[ProjectScanner] Validasi selesai: 0 valid, 0 auto-fix, 0 perlu AI
+Startup Scan Selesai:
+  Total: 0 file
+  Valid: 0 file
+  Auto-fix: 0 file
+  Perlu AI: 0 file
+Database Ledger diinisialisasi dengan WAL Mode.
+[Healer Init] Memindai konteks proyek & referensi GitHub sebelum bekerja...
+[ProjectScanner] Mencari referensi HitboxSeparation di GitHub...
+[Polyglot Listener] TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID kosong. Listener
+tidak dimulai.
+[Webhook] Memantau Roblox di Port 8080...
+[ProjectScanner] Memulai scan mendalam direktori proyek...
+[Healer Init] ✅ Scan proyek selesai. AI siap dengan konteks penuh.
+[Healer Init] Laporan perapian file:
+[Repair] Semua 0 file valid. Tidak ada yang perlu dihapus.
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ === EVOLUSI LEVEL 1 - SIKLUS KE-1 ===                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ ⚡ WORKER POOL AKTIF                                                         │
+│ 371 task dalam antrian — 1 worker berjalan paralel                           │
+│ Setiap worker ambil 1 task → kerjakan sampai LULUS → ambil berikutnya        │
+│ Evolusi 1 | Siklus 1                                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  [Agent_Alpha] Task 1/371: CORE_WORLD_SETTINGS_1 — Percobaan 1 (infinite retry)
+  [Agent_Alpha] Memproses CORE_WORLD_SETTINGS_1... (Antri Sequential - Standar
+Militer)
+  🔍 Menjalankan RAG Pipeline: Membaca Kitab DevForum & Ekstrak Raw GitHub...
+  RAG Query: 'roblox luau camera lock first person LockFirstPerson gravity
+Lighting strict'
+[GitHub] Code Search terbatas: Requires authentication
+  [Agent_Alpha] Task 1/371: CORE_WORLD_SETTINGS_1 — Percobaan 2 (infinite retry)
+  [Agent_Alpha] Memproses CORE_WORLD_SETTINGS_1... (Antri Sequential - Standar
+Militer)
+  🔍 Menjalankan RAG Pipeline: Membaca Kitab DevForum & Ekstrak Raw GitHub...
+  RAG Query: 'roblox luau camera lock first person LockFirstPerson gravity
+Lighting strict'
+[GitHub] Code Search terbatas: Requires authentication
+  [Agent_Alpha] Task 1/371: CORE_WORLD_SETTINGS_1 — Percobaan 3 (infinite retry)
+  [Agent_Alpha] Memproses CORE_WORLD_SETTINGS_1... (Antri Sequential - Standar
+Militer)
+  🔍 Menjalankan RAG Pipeline: Membaca Kitab DevForum & Ekstrak Raw GitHub...
+  RAG Query: 'roblox luau camera lock first person LockFirstPerson gravity
+Lighting strict'
+[GitHub] Code Search terbatas: Requires authentication
+  [Agent_Alpha] Task 1/371: CORE_WORLD_SETTINGS_1 — Percobaan 4 (infinite retry)
+  [Agent_Alpha] Memproses CORE_WORLD_SETTINGS_1... (Antri Sequential - Standar
+Militer)
+  🔍 Menjalankan RAG Pipeline: Membaca Kitab DevForum & Ekstrak Raw GitHub...
+  RAG Query: 'roblox luau camera lock first person LockFirstPerson gravity
+Lighting strict'
+[GitHub] Code Search terbatas: Requires authentication
+
+Sistem dihentikan oleh pengguna (SIGINT/SIGTERM).
+
+[Sistem] Mematikan seluruh proses Nexus...
