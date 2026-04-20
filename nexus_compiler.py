@@ -84,7 +84,7 @@ class AbsoluteOmniValidator:
             
 
             if req == "RaycastParams":
-                if "Raycast" not in sanitized_code:
+                if ("workspace:Raycast" not in sanitized_code and "workspace.Raycast" not in sanitized_code and "RaycastParams" not in sanitized_code):
                     omni_errors.append("Physical Precision Violation (DevForum Standard): Saat menggunakan Raycast, Anda WAJIB menggunakan 'RaycastParams.new()' dan mengatur FilterType agar sinar mengabaikan daun pohon/batu lain. Jika tidak, objek akan mendarat di atas daun dan melayang di udara!")
 
             if req == "HitboxSeparation":
