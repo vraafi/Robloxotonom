@@ -984,6 +984,18 @@ class AssetOrchestrator:
         luau_code, selector_log, is_aura_fallback = SmartUIAssetSelector.resolve_and_generate(task_name)
 
         if is_aura_fallback:
+            import re
+            asset_id_match = re.search(r"rbxassetid://(\d+)", luau_code)
+            if asset_id_match:
+                asset_id = asset_id_match.group(1)
+                console_terminal_interface.print(f"  [Asset Engine] [bold cyan]Mendeteksi Asset ID {asset_id} di Luau fallback. Mencoba mengunduh mesh...[/bold cyan]")
+                obj_path = f"/tmp/{asset_id}.obj"
+                downloaded_obj = cls._download_and_convert_mesh(asset_id)
+                if downloaded_obj and "v " in downloaded_obj:
+                    with open(obj_path, "w", encoding="utf-8") as f:
+                        f.write(downloaded_obj)
+                    return await cls._handle_mesh(task_name, downloaded_obj, obj_path)
+
             console_terminal_interface.print(
                 f"  [bold red][Asset Engine] ⚠️⚠️⚠️ PERINGATAN KERAS ⚠️⚠️⚠️[/bold red]"
             )
