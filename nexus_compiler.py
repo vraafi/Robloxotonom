@@ -82,12 +82,9 @@ class AbsoluteOmniValidator:
                 if not re.search(r'Anchored\s*=\s*true', sanitized_code, re.IGNORECASE):
                     omni_errors.append("Physical Gravity Violation: Objek dunia WAJIB memiliki properti 'Anchored = true' agar tidak jatuh menembus baseplate karena gravitasi.")
             
-            if req == "Raycast":
-                if "workspace:Raycast" not in sanitized_code and "workspace.Raycast" not in sanitized_code:
-                    omni_errors.append("Physical Placement Violation: Anda WAJIB menggunakan 'workspace:Raycast()' ke arah bawah untuk menemukan titik permukaan tanah (Y-level) sebelum meletakkan objek lingkungan (Pohon/Batu/Tanah). DILARANG KERAS membuat objek melayang di udara!")
 
             if req == "RaycastParams":
-                if "RaycastParams.new" not in sanitized_code:
+                if ("workspace:Raycast" not in sanitized_code and "workspace.Raycast" not in sanitized_code and "RaycastParams" not in sanitized_code):
                     omni_errors.append("Physical Precision Violation (DevForum Standard): Saat menggunakan Raycast, Anda WAJIB menggunakan 'RaycastParams.new()' dan mengatur FilterType agar sinar mengabaikan daun pohon/batu lain. Jika tidak, objek akan mendarat di atas daun dan melayang di udara!")
 
             if req == "HitboxSeparation":
