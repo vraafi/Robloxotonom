@@ -1101,7 +1101,7 @@ TASK_SPECIFIC_INSTRUCTIONS: dict = {
         "7. Mekanisme tembak: Tool.Activated → Raycast dari kamera ke arah depan.\n"
         "8. HitboxSeparation: buat Part transparan CanCollide=true sebagai hitbox.\n"
         "9. VisualEquip: WeldConstraint senjata ke RightHand karakter saat diequip. Drop rate menyesuaikan (Pistol 90%, Heavy Weapon 0.01%).\n"
-        "10. ProximityPrompt di tanah dengan ActionText = 'Equip'.\n"
+        "10. ProximityPrompt di tanah dengan ActionText = 'Equip'. JIKA MENGGUNAKAN MESH ASSET ID (rbxassetid://), PASTIKAN MENULISKANNYA SECARA JELAS KARENA AKAN DIUNDUH OTOMATIS OLEH ASSET ENGINE.\n"
     ),
 
     "FANTASY_WEAPON": (
