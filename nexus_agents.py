@@ -61,7 +61,7 @@ def extract_pure_luau_code(raw_payload: str) -> str:
         return ""
     code = raw_payload.strip()
     code = re.sub(r'^\s*`{3}[a-zA-Z]*\s*\n*', '', code, flags=re.IGNORECASE)
-    code = re.sub(r'\n*\s*`{3}\s*$', '', code)
+    code = re.sub(r'\n*\s*`{3}.*$', '', code, flags=re.DOTALL)
     return code.strip()
 
 
