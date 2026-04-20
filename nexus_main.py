@@ -1507,7 +1507,7 @@ class DynamicTaskArchitect:
                                 req_list.append(r)
 
                     if any(keyword in cat.upper() for keyword in ["WEAPON", "ARMOR", "ITEM", "GEAR", "TOOL", "AMMUNITION", "BAIT"]):
-                        for r in ["ItemCategory", "BasePrice", , "ProximityPrompt"]:
+                        for r in ["ItemCategory", "BasePrice", "ProximityPrompt"]:
                             if r not in req_list:
                                 req_list.append(r)
 
