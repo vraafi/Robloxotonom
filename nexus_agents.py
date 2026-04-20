@@ -1068,7 +1068,7 @@ TASK_SPECIFIC_INSTRUCTIONS: dict = {
         "2. WAJIB: local ItemCategory: string = 'Material'\n"
         "3. WAJIB: local BasePrice: number = 150 (contoh harga)\n"
         "4. Buat wujud fisik kecil (Part) di tanah dengan ProximityPrompt ActionText = 'Ambil'.\n"
-        "5. Saat dipungut: hapus dari workspace, tambah ke inventory via RemoteEvent ke server.\n"
+        "5. Saat dipungut: hapus dari workspace, tambah ke inventory via RemoteEvent ke server.\n" "6. Spawn Rate dinamis berdasarkan Rarity dan Map drop rates.\n"
         "6. CollectionService.AddTag(part, 'WorldItem') untuk tracking.\n"
         "7. CanCollide = false pada item, Anchored = false (bisa jatuh ke tanah).\n"
         "8. Fungsi spawn wajib seperti ini:\n"
@@ -1100,7 +1100,7 @@ TASK_SPECIFIC_INSTRUCTIONS: dict = {
         "6. local ItemCategory: string = 'Weapon'\n"
         "7. Mekanisme tembak: Tool.Activated → Raycast dari kamera ke arah depan.\n"
         "8. HitboxSeparation: buat Part transparan CanCollide=true sebagai hitbox.\n"
-        "9. VisualEquip: WeldConstraint senjata ke RightHand karakter saat diequip.\n"
+        "9. VisualEquip: WeldConstraint senjata ke RightHand karakter saat diequip. Drop rate menyesuaikan (Pistol 90%, Heavy Weapon 0.01%).\n"
         "10. ProximityPrompt di tanah dengan ActionText = 'Equip'.\n"
     ),
 
@@ -1114,7 +1114,7 @@ TASK_SPECIFIC_INSTRUCTIONS: dict = {
         "4. local ItemCategory: string = 'Weapon'\n"
         "5. VisualEquip: WeldConstraint ke RightHand karakter.\n"
         "6. ProximityPrompt ActionText = 'Equip'.\n"
-        "7. DILARANG: CompatibleCaliber (ini bukan senjata api).\n"
+        "7. DILARANG: CompatibleCaliber (ini bukan senjata api). Armor langka drop 0.01%, Armor murah 70%.\n"
     ),
 
     "MODERN_ARMOR_HELMET": (
