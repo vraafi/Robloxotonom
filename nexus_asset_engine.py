@@ -869,8 +869,9 @@ class AssetOrchestrator:
 
         # Eksekusi URL endpoint Roblox
         url = f"https://assetdelivery.roblox.com/v1/asset?id={asset_id}"
-        mesh_path = f"/tmp/{asset_id}.mesh"
-        obj_path = f"/tmp/{asset_id}.obj"
+        os.makedirs("/root/Robloxotonom/roblox_asset", exist_ok=True)
+        mesh_path = f"/root/Robloxotonom/roblox_asset/{asset_id}.mesh"
+        obj_path = f"/root/Robloxotonom/roblox_asset/{asset_id}.obj"
 
         try:
             # 1. Download file biner .mesh
@@ -989,7 +990,7 @@ class AssetOrchestrator:
             if asset_id_match:
                 asset_id = asset_id_match.group(1)
                 console_terminal_interface.print(f"  [Asset Engine] [bold cyan]Mendeteksi Asset ID {asset_id} di Luau fallback. Mencoba mengunduh mesh...[/bold cyan]")
-                obj_path = f"/tmp/{asset_id}.obj"
+                obj_path = f"/root/Robloxotonom/roblox_asset/{asset_id}.obj"
                 downloaded_obj = cls._download_and_convert_mesh(asset_id)
                 if downloaded_obj and "v " in downloaded_obj:
                     with open(obj_path, "w", encoding="utf-8") as f:
