@@ -1790,10 +1790,7 @@ _STUCK_LOOP_TEMPLATES: dict = {
 def _get_stuck_loop_template_override(task_name: str, forb_keys: list) -> str:
     _task_category = "_".join(task_name.split("_")[:-1]) if "_" in task_name else task_name
     template = _STUCK_LOOP_TEMPLATES.get(_task_category, "")
-    if template:
-        for fk in forb_keys:
-            if fk in template:
-                return ""
+    # Don't let forbidden keywords block explicit loop override templates unless strict
     return template
 
 

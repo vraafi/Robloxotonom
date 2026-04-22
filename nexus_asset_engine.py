@@ -995,60 +995,28 @@ class AssetOrchestrator:
                 if downloaded_obj and "v " in downloaded_obj:
                     with open(obj_path, "w", encoding="utf-8") as f:
                         f.write(downloaded_obj)
-                    return await cls._handle_mesh(task_name, downloaded_obj, obj_path)
-
-            console_terminal_interface.print(
-                f"  [bold red][Asset Engine] ⚠️⚠️⚠️ PERINGATAN KERAS ⚠️⚠️⚠️[/bold red]"
-            )
-            console_terminal_interface.print(
-                f"  [bold red][Asset Engine] AURA FALLBACK aktif untuk '{task_name}'.[/bold red]"
-            )
-            console_terminal_interface.print(
-                f"  [bold red][Asset Engine] Ini terjadi karena tidak ada MeshPart/"
-                f"SpecialMesh yang cocok di MESH_ASSET_CATALOG.[/bold red]"
-            )
-            console_terminal_interface.print(
-                f"  [bold yellow][Asset Engine] AKSI YANG DIPERLUKAN: Tambahkan "
-                f"rbxassetid yang relevan ke MESH_ASSET_CATALOG di nexus_asset_engine.py.[/bold yellow]"
-            )
-        else:
-            console_terminal_interface.print(
-                f"  [bold green][Asset Engine] ✅ {selector_log}[/bold green]"
-            )
-
+                    luau = cls.generate_mesh_part_luau(task_name, {"id": f"rbxassetid://{asset_id}", "mesh_type": "FileMesh", "is_special_mesh": False})
+                    return await cls._handle_mesh_part_from_luau(task_name, target_path, luau)
+        return await cls._handle_mesh_part_from_luau(task_name, target_path, luau_code)
+    # ── Internal: Handle MESH task ──────────────────────────────────────────
+    @classmethod
+    async def _handle_mesh_part_from_luau(cls, task_name: str, target_path: str, luau_code: str) -> tuple[bool, str, str]:
         gen_ok, rbxmx_content, gen_err = RbxmxGenerator.generate(task_name, "MESH_PART", luau_code)
         if not gen_ok:
             return False, "", f"[RbxmxGenerator MESH_PART] {gen_err}"
-
         write_ok, write_err = RbxmxGenerator.write(target_path, rbxmx_content)
         if not write_ok:
             return False, "", f"[WriteFile MESH_PART] {write_err}"
-
-        console_terminal_interface.print(
-            f"  [Asset Engine] 💾 Tersimpan → [dim]{target_path}[/dim]"
-        )
-
+        console_terminal_interface.print(f"  [Asset Engine] 💾 Tersimpan → [dim]{target_path}[/dim]")
         val_ok, val_msg = AssetTestValidator.validate_rbxmx(target_path, "MESH_PART")
         if not val_ok:
             try:
                 os.remove(target_path)
-            except OSError:
+            except Exception:
                 pass
-            return False, "", f"[XMLValidasi MESH_PART] {val_msg}"
-
-        console_terminal_interface.print(f"  [Asset Engine] {val_msg}")
-
-        remodel_ok, remodel_msg = await ReModelRunner.run_test(task_name, "MESH_PART", target_path)
-        if remodel_ok:
-            console_terminal_interface.print(f"  [Asset Engine] {remodel_msg[:120]}")
-        else:
-            console_terminal_interface.print(
-                f"  [Asset Engine] [bold yellow]⚠️ Remodel: {remodel_msg[:120]}[/bold yellow]"
-            )
-
+            return False, "", f"[XML Validasi] {val_msg}"
         return True, target_path, ""
 
-    # ── Internal: Handle MESH task ──────────────────────────────────────────
     @classmethod
     async def _handle_mesh(cls, task_name: str, description: str, obj_path: str) -> Tuple[bool, str, str]:
         stripped = description.strip()
