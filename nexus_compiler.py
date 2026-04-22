@@ -141,7 +141,10 @@ class AbsoluteOmniValidator:
                 omni_errors.append("Item Logic Violation: Umpan (Bait) hidup WAJIB menggunakan TweenService untuk membuat animasinya menggeliat/bergerak.")
 
         for forb in forbidden_keywords:
-            if forb in sanitized_code:
+            if forb == "_G":
+                if re.search(r"\b_G\b", sanitized_code) or "_G." in sanitized_code:
+                    omni_errors.append(f"Contract Violation: Dilarang keras menggunakan '{forb}' pada modul ini.")
+            elif re.search(r"\b" + re.escape(forb) + r"\b", sanitized_code):
                 omni_errors.append(f"Contract Violation: Dilarang keras menggunakan '{forb}' pada modul ini.")
 
         if omni_errors:
