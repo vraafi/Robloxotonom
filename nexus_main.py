@@ -1367,6 +1367,16 @@ def setup_rojo():
     with open(config_path, "w") as f:
         json.dump(project_config, f, indent=4)
 
+    # Auto-inject Nexus Telemetry script
+    try:
+        from nexus_telemetry_script import TELEMETRY_SCRIPT_LUA
+        telemetry_path = os.path.join(PROJECT_ROOT_DIRECTORY, "src", "ServerScriptService", "NexusTelemetry.server.lua")
+        with open(telemetry_path, "w", encoding="utf-8") as f:
+            f.write(TELEMETRY_SCRIPT_LUA)
+        console_terminal_interface.print("[bold green]✅ Nexus Telemetry Script berhasil diinjeksi ke ServerScriptService.[/bold green]")
+    except Exception as e:
+        console_terminal_interface.print(f"[bold red]❌ Gagal menginjeksi Telemetry Script: {e}[/bold red]")
+
 
 async def dump_ssd():
     """Dump semua modul terverifikasi ke file di disk."""
@@ -2268,4 +2278,3 @@ if __name__ == "__main__":
         asyncio.run(run_orchestrator())
     except SystemExit:
         pass
-        

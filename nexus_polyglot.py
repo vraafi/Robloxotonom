@@ -1714,7 +1714,7 @@ JSON ARRAY:"""
         await self._send(chat_id, "🏗️ <b>Rojo build dimulai...</b>")
         loop = asyncio.get_running_loop()
 
-        def _build():
+        def _build_rojo():
             try:
                 from nexus_main import RobloxDeployer
                 return RobloxDeployer.compile_rojo()
@@ -1809,7 +1809,7 @@ JSON ARRAY:"""
 
             loop = asyncio.get_running_loop()
 
-            def _build():
+            def _build_rojo_force():
                 return RobloxDeployer.compile_rojo()
 
             rojo_ok, rojo_err = await loop.run_in_executor(None, _build)

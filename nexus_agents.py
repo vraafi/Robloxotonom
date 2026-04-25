@@ -23,7 +23,7 @@ from nexus_config import (
     GEMINI_CLI_PATH,
     ROBLOX_MCP_URL,
 )
-from nexus_database import retrieve_ecosystem_context, save_verified_module
+from nexus_database import retrieve_ecosystem_context, save_verified_module, get_unanalyzed_telemetry
 from nexus_compiler import AbsoluteOmniValidator, NativeLuauCompiler
 from nexus_asset_engine import AssetOrchestrator, detect_asset_type
 from nexus_project_scanner import (
@@ -628,7 +628,7 @@ global_agent_memory = AgentMemory()
 
 def inject_antigravity_laws(prompt: str) -> str:
     """Menyuntikkan hukum-hukum dasar AI ke setiap prompt.
-    
+
     Logika digabungkan dari:
     - Aturan dasar AI (versi asli)
     - Hukum fisika Roblox (nexus_agents.py v1.1)
@@ -1515,7 +1515,7 @@ TASK_SPECIFIC_INSTRUCTIONS: dict = {
           "5. Clamp posisi titik agar tidak keluar frame minimap.\n"
       ),
 
-  
+
 }
 
 # ============================================================
@@ -1686,7 +1686,17 @@ class OmniSynthesizerAgent:
         previous_error: str,
         previous_code: str,
     ) -> Tuple[bool, str, str]:
+        telemetry_logs = await get_unanalyzed_telemetry()
+        telemetry_context = ""
+        if telemetry_logs:
+            telemetry_context = "\n[⚠️ LIVE TELEMETRY FEEDBACK DARI ROBLOX SERVER ⚠️]\n"
+            telemetry_context += "Perhatikan error yang terjadi di server live berikut dan pastikan tidak terulang di kodemu:\n"
+            for log in telemetry_logs:
+                telemetry_context += f"- [{log['event_type']}] {log['event_data']}\n"
+            telemetry_context += "\n"
         comprehensive_prompt = (
+            f"{telemetry_context}"
+
             f"[KEYWORD WAJIB (SYARAT LULUS COMPILER)]: Anda HARUS menggunakan keyword/fungsi berikut dalam skrip Anda: {', '.join(req_keys) if req_keys else 'Tidak ada keyword khusus'}\n"
             f"[KEYWORD HARAM (AKAN DITOLAK COMPILER)]: JANGAN PERNAH menggunakan keyword berikut: {', '.join(forb_keys) if forb_keys else 'Tidak ada batasan khusus'}\n\n"
             f"[CHEAT SHEET 14 TITIK KEAMANAN MILITER (WAJIB DIPATUHI OLEH SYNTHESIZER!)]\n"
@@ -2083,11 +2093,11 @@ async def execute_antigravity_fleet(
             api_key=ACTIVE_AGENTS[0]["api_key"],
         )
         tasks = await fleet_leader.analyze_user_report(user_report, project_context)
-        
+
         # Pastikan tugas mencakup poin-poin yang diminta pengguna jika relevan
         if not tasks:
             raise Exception("Gagal menghasilkan daftar tugas.")
-            
+
     except Exception as e:
         # Fallback ke daftar tugas terstruktur sesuai permintaan pengguna
         tasks = [
@@ -2105,7 +2115,7 @@ async def execute_antigravity_fleet(
             if t.get("status") == "completed": status_icon = "✅"
             elif t.get("status") == "running": status_icon = "🔄"
             elif t.get("status") == "failed": status_icon = "❌"
-            
+
             display += f"{i}. {status_icon} {t.get('title', 'Tugas ' + str(i))}\n"
             if t.get("status") == "running":
                 display += f"   └─ ⚡ *Sedang dikerjakan...*\n"
@@ -2195,7 +2205,7 @@ async def execute_antigravity_fleet(
                 try:
                     task["status"] = "running"
                     await send_fn(_generate_antigravity_display(tasks, progress["done"], progress["total"]))
-                    
+
                     success, result_msg = await _execute_one_task_validated(
                         task, agent_cfg, github_context
                     )

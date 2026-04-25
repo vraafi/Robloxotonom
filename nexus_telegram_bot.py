@@ -272,7 +272,7 @@ def _find_lua_file_by_name(name: str) -> Optional[str]:
 # ================================================
 # SANDBOX: Test kode sebelum push ke GitHub
 # ================================================
-async def _sandbox_test_file(file_path: str, new_content: str, send_fn) -> bool:
+async def _sandbox_test_file(file_path: str, new_content: str, send_fn_task) -> bool:
     await send_fn("Sandbox Testing — menguji kode di lingkungan terisolasi...")
 
     sandbox_dir = tempfile.mkdtemp(prefix="nexus_sandbox_")
@@ -310,7 +310,7 @@ async def _sandbox_test_file(file_path: str, new_content: str, send_fn) -> bool:
         shutil.rmtree(sandbox_dir, ignore_errors=True)
 
 
-async def _git_push(repo_dir: str, file_rel_path: str, commit_msg: str, send_fn) -> bool:
+async def _git_push(repo_dir: str, file_rel_path: str, commit_msg: str, send_fn_task) -> bool:
     github_token = (
         os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
         or os.getenv("GITHUB_TOKEN", "")
@@ -343,7 +343,7 @@ async def _git_push(repo_dir: str, file_rel_path: str, commit_msg: str, send_fn)
 # ================================================
 # STARTUP SCAN
 # ================================================
-async def _startup_deep_scan(send_fn):
+async def _startup_deep_scan(send_fn_task):
     if not os.path.exists(SOURCE_CODE_DIRECTORY):
         await send_fn(
             "Nexus AI Agent v" + _BOT_VERSION + " Menyala!\n\n"
@@ -933,10 +933,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             reply_markup=_control_keyboard(),
         )
 
-        async def send_fn(t):
+        async def send_fn_task(t):
             await _safe_edit(msg, t)
 
-        await execute_single_task_with_retry(task, send_fn)
+        await execute_single_task_with_retry(task, send_fn_task)
         return
 
     state = _user_state.get(chat_id, {})
@@ -1133,10 +1133,10 @@ async def post_init(application: Application) -> None:
     global _bot_app
     _bot_app = application
 
-    async def send_fn(text):
+    async def send_fn_init(text):
         await _safe_send(application.bot, _OWNER_CHAT_ID, text)
 
-    await _startup_deep_scan(send_fn)
+    await _startup_deep_scan(send_fn_init)
 
     # Kirim menu utama setelah startup
     await _safe_send(

@@ -77,7 +77,7 @@ async def save_verified_module(module_name: str, filepath: str, code_content: st
     cryptographic_hash = hashlib.sha256(code_content.encode("utf-8")).hexdigest()
 
     async with DATABASE_MUTEX:
-        def _save():
+        def _save_verified():
             conn = establish_database_connection()
             cursor = conn.cursor()
 
@@ -90,7 +90,7 @@ async def save_verified_module(module_name: str, filepath: str, code_content: st
             conn.commit()
             conn.close()
 
-        await asyncio.to_thread(_save)
+        await asyncio.to_thread(_save_verified)
 
     return cryptographic_hash
 
@@ -140,7 +140,7 @@ async def log_roblox_telemetry(server_id: str, event_type: str, event_data: dict
 
 async def get_unanalyzed_telemetry() -> List[dict]:
     async with DATABASE_MUTEX:
-        def _get():
+        def _get_telemetry():
             conn = establish_database_connection()
             cursor = conn.cursor()
 
@@ -172,7 +172,7 @@ async def get_unanalyzed_telemetry() -> List[dict]:
 
             return logs_list
 
-        return await asyncio.to_thread(_get)
+        return await asyncio.to_thread(_get_telemetry)
 
 
 async def update_daily_log(player_id: str, amount: int):
@@ -198,7 +198,7 @@ async def update_daily_log(player_id: str, amount: int):
 async def get_daily_log_amount(player_id: str) -> int:
     today = datetime.date.today().isoformat()
     async with DATABASE_MUTEX:
-        def _get():
+        def _get_daily():
             conn = establish_database_connection()
             cursor = conn.cursor()
             cursor.execute(
@@ -208,7 +208,7 @@ async def get_daily_log_amount(player_id: str) -> int:
             result = cursor.fetchone()
             conn.close()
             return result[0] if result else 0
-        return await asyncio.to_thread(_get)
+        return await asyncio.to_thread(_get_daily)
 
 async def initialize_session_table():
     async with DATABASE_MUTEX:
@@ -229,7 +229,7 @@ async def initialize_session_table():
 
 async def save_user_session(chat_id: str, history: list):
     async with DATABASE_MUTEX:
-        def _save():
+        def _save_session():
             conn = establish_database_connection()
             cursor = conn.cursor()
             cursor.execute('''
@@ -238,7 +238,7 @@ async def save_user_session(chat_id: str, history: list):
             ''', (str(chat_id), json.dumps(history)))
             conn.commit()
             conn.close()
-        await asyncio.to_thread(_save)
+        await asyncio.to_thread(_save_session)
 
 
 async def load_user_session(chat_id: str) -> list:
