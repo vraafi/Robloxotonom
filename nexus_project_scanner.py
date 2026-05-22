@@ -111,6 +111,18 @@ async def scan_existing_project(project_root: str = None) -> str:
     lines_summary.append("INSTRUKSI UNTUK AI: Bacalah daftar di atas. JANGAN membuat ulang modul yang sudah ada.")
     lines_summary.append("Fokus mengisi GAP yang belum ada. Gunakan nama modul yang sudah ada untuk require() yang akurat.")
 
+    from nexus_config import ROBLOX_MCP_URL
+    from nexus_agents import RobloxMCPBridge
+    if ROBLOX_MCP_URL:
+        _log("[bold yellow][ProjectScanner] Mengambil data MCP Canvas & Log live dari Studio...[/bold yellow]")
+        try:
+            mcp_data = await RobloxMCPBridge.execute_tool("read_logs", {"lines": 50})
+            lines_summary.append("")
+            lines_summary.append("[DATA MCP CANVAS & LIVE STUDIO LOGS]:")
+            lines_summary.append(mcp_data[:1000])
+        except Exception as e:
+            _log(f"[bold red][ProjectScanner] Gagal mengambil data MCP: {str(e)}[/bold red]")
+
     context_str = "\n".join(lines_summary) + "\n"
     _log(
         f"[bold green][ProjectScanner] ✅ Scan selesai: {len(lua_files)} modul terdeteksi di {root}[/bold green]"

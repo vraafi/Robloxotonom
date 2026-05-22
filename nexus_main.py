@@ -1428,6 +1428,15 @@ class DynamicTaskArchitect:
             "lalu hasilkan JSON daftar tugas baru (fitur/sistem) yang BELUM ADA di ekosistem game ini."
         )
 
+        from nexus_config import ROBLOX_MCP_URL
+        if ROBLOX_MCP_URL:
+            from nexus_agents import RobloxMCPBridge
+            try:
+                mcp_data = await RobloxMCPBridge.execute_tool("read_logs", {"lines": 50})
+                sys_inst += f"\n\n[LIVE STUDIO CANVAS DATA (via MCP)]:\n{mcp_data[:500]}\n"
+            except Exception:
+                pass
+
         schema = (
             "{\n"
             '  "new_tasks": [\n'

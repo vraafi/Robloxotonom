@@ -149,6 +149,16 @@ async def sandbox_test_and_push(
             else:
                 await send_fn("Rojo build OK di sandbox!")
 
+                from nexus_config import ROBLOX_MCP_URL
+                from nexus_agents import RobloxMCPBridge
+                if ROBLOX_MCP_URL:
+                    await send_fn("Memulai MCP Live Playtest di Studio...")
+                    try:
+                        mcp_res = await RobloxMCPBridge.execute_tool("start_playtest", {})
+                        await send_fn(f"MCP Playtest Started: {mcp_res[:200]}")
+                    except Exception as e:
+                        await send_fn(f"MCP Playtest Failed: {str(e)}")
+
         sandbox.commit_to_real_project(file_relative_path)
 
     await send_fn("Sandbox OK! " + os.path.basename(file_relative_path) + " lolos semua uji.")

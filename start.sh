@@ -5,6 +5,13 @@ if [ -f "$HOME/.cargo/env" ]; then
     source "$HOME/.cargo/env"
 fi
 
+# ========================================================
+# ROBLOX MCP NETWORK TUNNEL SETUP
+# Set your ngrok or local tunnel URL below to connect the AI
+# to your local Roblox Studio for JSON-RPC MCP commands.
+# ========================================================
+export ROBLOX_MCP_URL="${ROBLOX_MCP_URL:-https://placeholder-tunnel.ngrok.app}"
+
 cleanup() {
     trap - SIGINT SIGTERM SIGHUP EXIT
     echo -e "\n[Sistem] Mematikan seluruh proses Nexus..."
