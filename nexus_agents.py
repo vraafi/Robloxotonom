@@ -70,9 +70,11 @@ class RobloxMCPBridge:
     Jembatan HTTP ke PC Lokal Anda (Roblox Studio MCP).
     Membypass bug enum API dengan menembak langsung JSON-RPC ke server.
     """
-    @staticmethod
-    async def execute_tool(tool_name: str, arguments: dict) -> str:
-        if not ROBLOX_MCP_URL:
+    def __init__(self, mcp_url: str):
+        self.mcp_url = mcp_url
+
+    async def execute_tool(self, tool_name: str, arguments: dict) -> str:
+        if not self.mcp_url:
             return "ERROR: ROBLOX_MCP_URL tidak dikonfigurasi di VPS Anda."
 
         payload = {
@@ -84,7 +86,7 @@ class RobloxMCPBridge:
 
         def _post():
             try:
-                res = requests.post(f"{ROBLOX_MCP_URL}/jsonrpc", json=payload, timeout=45)
+                res = requests.post(f"{self.mcp_url}/jsonrpc", json=payload, timeout=45)
                 if res.status_code == 200:
                     return res.text
                 return f"MCP_ERROR: Kode {res.status_code} | Pesan: {res.text}"
@@ -805,7 +807,8 @@ async def execute_antigravity_simple(prompt: str, model: str, max_retries: int =
 # =====================================================================
 
 class AutoHealerAgent:
-    def __init__(self):
+    def __init__(self, mcp_bridge=None):
+        self.mcp_bridge = mcp_bridge
         self.sys_inst = (
             "<|think|>\n"
             "BERPIKIRLAH SECARA MENDALAM DAN EKSTENSIF (REASON LONGER) SEBELUM MENJAWAB! Evaluasi setiap kemungkinan kesalahan kode sebelum Anda memperbaikinya. "
@@ -941,7 +944,11 @@ class AutoHealerAgent:
                         f"[bold cyan]   🛠️ [MCP Action] AI Menjalankan Studio Tool: {tool_name}[/bold cyan]"
                     )
 
-                    tool_response = await RobloxMCPBridge.execute_tool(tool_name, tool_args)
+                    if self.mcp_bridge:
+                        tool_response = await self.mcp_bridge.execute_tool(tool_name, tool_args)
+                    else:
+                        tool_response = "MCP Bridge Not Available"
+
                     mcp_history_log += (
                         f"\n--- CALL: {tool_name} ---\n"
                         f"ARGS: {json.dumps(tool_args)}\n"
@@ -967,7 +974,7 @@ class AutoHealerAgent:
         )
         try:
             _github_hitbox = await search_github_for_hitbox_armor()
-            _project_ctx = await scan_existing_project()
+            _project_ctx = await scan_existing_project(mcp_bridge=self.mcp_bridge)
             self._project_context_cache = _project_ctx
             self._github_hitbox_context = _github_hitbox
             console_terminal_interface.print(
@@ -1563,8 +1570,9 @@ TASK_RAG_QUERIES: dict = {
 
 
 class OmniSynthesizerAgent:
-    def __init__(self, healer_agent: AutoHealerAgent):
+    def __init__(self, healer_agent: AutoHealerAgent, mcp_bridge=None):
         self.healer_agent = healer_agent
+        self.mcp_bridge = mcp_bridge
         self.sys_inst = (
             "<|think|>\n"
             "BERPIKIRLAH SECARA MENDALAM DAN EKSTENSIF (REASON LONGER) SEBELUM MENJAWAB! Evaluasi setiap elemen fisika dan arsitektur sebelum Anda menulis kode. "

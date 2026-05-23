@@ -609,6 +609,14 @@ class PolyglotSynthesizerAgent:
             f"- Timeout maks {EXECUTION_TIMEOUT_SECONDS} detik"
         )
 
+        from nexus_config import ROBLOX_MCP_URL
+        if ROBLOX_MCP_URL:
+            system_prompt += (
+                "\n\n[ROBLOX MCP AKTIF]:\n"
+                "Jika Anda ditugaskan untuk mengubah kode Roblox, pastikan Anda juga mengembalikan JSON-RPC format "
+                "dengan key 'mcp_tool_call' seperti yang dikonfigurasi pada agent utama jika debugging di Roblox Studio diperlukan."
+            )
+
         async with POLYGLOT_CLI_SEMAPHORE:
             code = await self._call_gemini(system_prompt, task_desc)
 

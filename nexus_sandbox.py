@@ -100,6 +100,7 @@ async def sandbox_test_and_push(
     commit_message: str = "Auto-fix dari Nexus AI",
     push_to_github: bool = True,
     test_rojo: bool = False,
+    mcp_bridge=None,
 ) -> Tuple[bool, str]:
     """
     Pipeline: Sandbox -> Test -> Commit -> Push ke GitHub jika OK.
@@ -129,6 +130,11 @@ async def sandbox_test_and_push(
         elif ext in (".lua", ".luau"):
             ok, msg = sandbox.test_lua_syntax(file_relative_path)
             test_name = "Luau syntax"
+            if ok and mcp_bridge:
+                try:
+                    await mcp_bridge.execute_tool("execute_luau", {"code": new_content})
+                except Exception:
+                    pass
         else:
             ok, msg = True, "Tipe file tidak diuji syntax"
             test_name = "Skip"
@@ -148,6 +154,24 @@ async def sandbox_test_and_push(
                 return False, "Rojo build error: " + rojo_msg
             else:
                 await send_fn("Rojo build OK di sandbox!")
+
+                if mcp_bridge:
+                    await send_fn("Memulai MCP Live Playtest di Studio...")
+                    try:
+                        mcp_res = await mcp_bridge.execute_tool("start_playtest", {})
+                        await send_fn(f"MCP Playtest Started: {mcp_res[:200]}")
+
+                        await asyncio.sleep(5)
+
+                        log_res = await mcp_bridge.execute_tool("read_logs", {"lines": 50})
+                        await send_fn(f"MCP Playtest Logs:\n{log_res[:800]}")
+
+                        try:
+                            await mcp_bridge.execute_tool("stop_playtest", {})
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        await send_fn(f"MCP Playtest Failed: {str(e)}")
 
         sandbox.commit_to_real_project(file_relative_path)
 
