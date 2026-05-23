@@ -43,7 +43,7 @@ def _get_github_token() -> str:
     )
 
 
-async def scan_existing_project(project_root: str = None) -> str:
+async def scan_existing_project(project_root: str = None, mcp_bridge=None) -> str:
     """
     Membaca seluruh direktori FantasyExtraction_Roblox_TrueApex (jika ada)
     untuk memahami modul apa yang sudah selesai dibangun maupun yang belum ada.
@@ -111,17 +111,10 @@ async def scan_existing_project(project_root: str = None) -> str:
     lines_summary.append("INSTRUKSI UNTUK AI: Bacalah daftar di atas. JANGAN membuat ulang modul yang sudah ada.")
     lines_summary.append("Fokus mengisi GAP yang belum ada. Gunakan nama modul yang sudah ada untuk require() yang akurat.")
 
-    from nexus_config import ROBLOX_MCP_URL
-    from nexus_agents import RobloxMCPBridge
-    if ROBLOX_MCP_URL:
-        _log("[bold yellow][ProjectScanner] Mengambil data MCP Canvas & Log live dari Studio...[/bold yellow]")
-        try:
-            mcp_data = await RobloxMCPBridge.execute_tool("read_logs", {"lines": 50})
-            lines_summary.append("")
-            lines_summary.append("[DATA MCP CANVAS & LIVE STUDIO LOGS]:")
-            lines_summary.append(mcp_data[:1000])
-        except Exception as e:
-            _log(f"[bold red][ProjectScanner] Gagal mengambil data MCP: {str(e)}[/bold red]")
+    if mcp_bridge:
+        lines_summary.append("")
+        lines_summary.append("[MCP STUDIO ACCESS TERSEDIA]:")
+        lines_summary.append("Agen ini terhubung ke Roblox Studio MCP. Anda dapat secara proaktif memanggil MCP tool (misalnya 'read_logs') untuk memahami hierarki kanvas langsung dari engine Roblox sebelum menulis logika baru.")
 
     context_str = "\n".join(lines_summary) + "\n"
     _log(
@@ -508,7 +501,7 @@ ROBLOX_VALIDATION_RULES = [
 ]
 
 
-async def scan_existing_project(project_root: str = None) -> str:
+async def scan_existing_project(project_root: str = None, mcp_bridge=None) -> str:
     """
     UPGRADE v2.0: Membaca ISI setiap file Lua (snippet 300 char),
     bukan hanya daftar nama. AI bisa paham konten modul yang sudah ada.

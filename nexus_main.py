@@ -1396,7 +1396,7 @@ class DynamicTaskArchitect:
     """Arsitek AI Otonom yang membaca file selesai dan mencari gap di DevForum/Github untuk men-generate tugas baru."""
 
     @staticmethod
-    async def analyze_and_plan_next_evolution(evolution_level: int, agent: dict) -> list:
+    async def analyze_and_plan_next_evolution(evolution_level: int, agent: dict, mcp_bridge=None) -> list:
         console_terminal_interface.print(
             f"\n[bold magenta]🔍 [Architect] Menganalisis File Ekosistem & Scraping RAG untuk Evolusi {evolution_level}...[/bold magenta]"
         )
@@ -1428,11 +1428,9 @@ class DynamicTaskArchitect:
             "lalu hasilkan JSON daftar tugas baru (fitur/sistem) yang BELUM ADA di ekosistem game ini."
         )
 
-        from nexus_config import ROBLOX_MCP_URL
-        if ROBLOX_MCP_URL:
-            from nexus_agents import RobloxMCPBridge
+        if mcp_bridge:
             try:
-                mcp_data = await RobloxMCPBridge.execute_tool("read_logs", {"lines": 50})
+                mcp_data = await mcp_bridge.execute_tool("read_logs", {"lines": 50})
                 sys_inst += f"\n\n[LIVE STUDIO CANVAS DATA (via MCP)]:\n{mcp_data[:500]}\n"
             except Exception:
                 pass
@@ -2028,9 +2026,13 @@ async def run_orchestrator():
         asyncio.create_task(start_telemetry_webhook())
         asyncio.create_task(start_telegram_polling())  # Polyglot Telegram Listener (Non-Blocking)
 
-        healer = AutoHealerAgent()
+        from nexus_config import ROBLOX_MCP_URL
+        from nexus_agents import RobloxMCPBridge
+        mcp_bridge = RobloxMCPBridge(ROBLOX_MCP_URL) if ROBLOX_MCP_URL else None
+
+        healer = AutoHealerAgent(mcp_bridge)
         await healer.initialize_and_scan()
-        synthesizer = OmniSynthesizerAgent(healer)
+        synthesizer = OmniSynthesizerAgent(healer, mcp_bridge)
 
         evolution_level = 1
         generation_counter = 1
@@ -2048,7 +2050,7 @@ async def run_orchestrator():
                 current_agent_architect = ACTIVE_AGENTS[agent_idx % len(ACTIVE_AGENTS)]
                 agent_idx += 1
                 task_queue = await DynamicTaskArchitect.analyze_and_plan_next_evolution(
-                    evolution_level, current_agent_architect
+                    evolution_level, current_agent_architect, mcp_bridge
                 )
 
                 if not task_queue:

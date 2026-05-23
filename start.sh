@@ -9,8 +9,13 @@ fi
 # ROBLOX MCP NETWORK TUNNEL SETUP
 # Set your ngrok or local tunnel URL below to connect the AI
 # to your local Roblox Studio for JSON-RPC MCP commands.
+# Pastikan Anda telah menjalankan tunnel (misal: ngrok http 8080)
+# di PC lokal Anda sebelum menjalankan VPS ini.
 # ========================================================
-export ROBLOX_MCP_URL="${ROBLOX_MCP_URL:-https://placeholder-tunnel.ngrok.app}"
+export ROBLOX_MCP_URL="https://serveo.net"
+
+ssh -R 80:localhost:8080 serveo.net -N &
+TUNNEL_PID=$!
 
 cleanup() {
     trap - SIGINT SIGTERM SIGHUP EXIT
